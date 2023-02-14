@@ -4,8 +4,8 @@
 
 #include "global.h"
 
-int hyper_open(struct inode *inode, struct file *file);
+extern int hyper_open(struct inode *inode, struct file *file);
 
-int hyper_close(struct inode *inode, struct file *file);
+extern int hyper_close(struct inode *inode, struct file *file);
 
 #endif

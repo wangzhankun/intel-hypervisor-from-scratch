@@ -7,21 +7,30 @@
 
 using namespace std;
 
-bool is_vmx_supported()
+void printAppearance()
 {
-    unsigned int eax, ebx, ecx, edx;
-    __cpuid(1, eax, ebx, ecx, edx);
-    return (ecx & 0x00000020);
+    printf("\n"
+
+           "    _   _                             _                  _____                      ____                 _       _     \n"
+           "   | | | |_   _ _ __   ___ _ ____   _(_)___  ___  _ __  |  ___| __ ___  _ __ ___   / ___|  ___ _ __ __ _| |_ ___| |__  \n"
+           "   | |_| | | | | '_ \\ / _ \\ '__\\ \\ / / / __|/ _ \\| '__| | |_ | '__/ _ \\| '_ ` _ \\  \\___ \\ / __| '__/ _` | __/ __| '_ \\ \n"
+           "   |  _  | |_| | |_) |  __/ |   \\ V /| \\__ \\ (_) | |    |  _|| | | (_) | | | | | |  ___) | (__| | | (_| | || (__| | | |\n"
+           "   |_| |_|\\__, | .__/ \\___|_|    \\_/ |_|___/\\___/|_|    |_|  |_|  \\___/|_| |_| |_| |____/ \\___|_|  \\__,_|\\__\\___|_| |_|\n"
+           "          |___/|_|                                                                                                     \n"
+
+           "\n\n");
 }
 
 int main(int argc, char **argv)
 {
-    if(is_vmx_supported())
-        cout << "VMX supported" << endl;
-    else
-        cout << "VMX not supported" << endl;
+    printAppearance();
 
-    int fd = open("/dev/hypervisor", O_RDWR);
+    int fd = open("/dev/myhypervisor", O_RDWR);
+    if (fd < 0)
+    {
+        cout << "Failed to open /dev/hypervisor" << endl;
+        return -1;
+    }
 
     close(fd);
     return 0;

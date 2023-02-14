@@ -10,13 +10,14 @@ MODULE_LICENSE("GPL");
 #include "../include/global.h"
 #include "../include/open_close.h"
 
+#include "../include/ioctl.h"
 
 
 struct file_operations hyper_fops = {
     .owner = THIS_MODULE,
     .open = hyper_open,
     .release = hyper_close,
-    
+    .unlocked_ioctl = hyper_unclocked_ioctl,
 };
 
 struct miscdevice hypervisor_cdev = {
@@ -27,13 +28,15 @@ struct miscdevice hypervisor_cdev = {
 
 static int __init misc_init(void)
 {
+    LOG_INFO("\n\n\n\n\n");
     LOG_INFO("--------------------------\n");
     LOG_INFO("Hello, hypervisor\n");
     LOG_INFO("**********************************");
 
-    int ret = 0;
+    int ret;
     ret = misc_register(&hypervisor_cdev);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         LOG_ERR("misc_register failed\n");
         return ret;
     }
