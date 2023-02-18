@@ -8,16 +8,58 @@
 #include "../include/vmx_inst.h"
 #include "../include/reg.h"
 
-static VIRTUAL_MACHINE_STATE g_guest_state[32];
+static VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
 static cpumask_var_t cpus_hardware_enabled;
 
 uint64_t g_stack_pointer_for_returning;
 uint64_t g_base_pointer_for_returning;
 
-extern void enableVMX(void);
 extern void VmexitHandler(void); // defined in VmexitHandler.s
 
-void terminateVMX(void *unused)
+static bool enableVMX(VIRTUAL_MACHINE_STATE *guest_state)
+{
+    uint64_t cr4 = 0;
+
+    // enable VMX
+    cr4 = get_cr4();
+    cr4 |= 0x02000;//13th bit 	Virtual Machine Extensions Enable, https://wiki.osdev.org/CPU_Registers_x86-64#CR4
+    set_cr4(cr4);
+
+    // get IA32_VMX_BASIC MSR RevisionId
+    IA32_VMX_BASIC_MSR_BITs vmx_basic = {0};
+    rdmsrl(MSR_IA32_VMX_BASIC, vmx_basic.All);
+
+    // set the revision id to the vmxon region
+    *(uint64_t *)(__va(guest_state->VmxonRegion)) = vmx_basic.Fields.RevisionId;
+
+    // check if the vmxon region is supported
+    if (vmxon(guest_state->VmxonRegion) != 0) // execute vmxon instruction
+    {
+        LOG_ERR("vmxon failed");
+        return false;
+    }
+
+
+    // set the revision id to the vmcs region
+    *(uint64_t *)(__va(guest_state->VmcsRegion)) = vmx_basic.Fields.RevisionId;
+
+    // check if the vmcs region is supported
+    if(vmptrld(guest_state->VmcsRegion) != 0)
+    {
+        LOG_ERR("vmptrld failed");
+        return false;
+    }
+
+    return true;
+}
+
+static void disableVMX(VIRTUAL_MACHINE_STATE* guest_state)
+{
+    vmclear(guest_state->VmcsRegion);
+    vmxoff();
+}
+
+static void terminateVMX(void *unused)
 {
     int cpu = raw_smp_processor_id();
 
@@ -33,11 +75,13 @@ void terminateVMX(void *unused)
 
     cpumask_clear_cpu(cpu, cpus_hardware_enabled);
 
+
+    disableVMX(guest_state);
     freeVMCSRegion(guest_state);
     freeVMXRegion(guest_state);
 }
 
-BOOL initializeVMX(void *unused)
+static void initializeVMX(void *unused)
 {
     int cpu = raw_smp_processor_id();
 
@@ -46,17 +90,16 @@ BOOL initializeVMX(void *unused)
     VIRTUAL_MACHINE_STATE *guest_state = &g_guest_state[cpu];
 
     if (cpumask_test_cpu(cpu, cpus_hardware_enabled))
-        return true;
+        return;
 
     cpumask_set_cpu(cpu, cpus_hardware_enabled);
 
-    enableVMX();
 
     if (!allocateVMXRegion(guest_state))
     {
         cpumask_clear_cpu(cpu, cpus_hardware_enabled);
         LOG_ERR("Failed to allocate VMX region on CPU %d", cpu);
-        return false;
+        return;
     }
 
     if (!allocateVMCSRegion(guest_state))
@@ -64,16 +107,30 @@ BOOL initializeVMX(void *unused)
         cpumask_clear_cpu(cpu, cpus_hardware_enabled);
         freeVMXRegion(guest_state);
         LOG_ERR("Failed to allocate VMCS region on CPU %d", cpu);
-        return false;
+        return;
     }
 
-    return true;
+    if(enableVMX(guest_state) == false)
+    {
+        cpumask_clear_cpu(cpu, cpus_hardware_enabled);
+        freeVMCSRegion(guest_state);
+        freeVMXRegion(guest_state);
+        LOG_ERR("Failed to enable VMX on CPU %d", cpu);
+        return;
+    }
+
+
+    return;
 }
 
 void exitVMX(void)
 {
     on_each_cpu((smp_call_func_t)terminateVMX, NULL, 1);
-
+    int cpu_num = cpumask_weight(cpus_hardware_enabled);
+    if (cpu_num != 0)
+    {
+        LOG_ERR("VMX is still enabled on %d CPUs", cpu_num);
+    }
     free_cpumask_var(cpus_hardware_enabled);
 }
 
@@ -83,6 +140,12 @@ BOOL initVMX(void)
     {
         g_guest_state[i].VmxonRegion = 0;
         g_guest_state[i].VmcsRegion = 0;
+    }
+
+    if(cpu_has_vmx() == false)
+    {
+        LOG_ERR("VMX is not supported");
+        return false;
     }
 
     if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
@@ -513,7 +576,7 @@ void MainVmexitHandler(PGUEST_REGS GuestRegs)
 
     default:
     {
-        // DbgBreakPoint();
+        // BREAKPOINT();
         break;
     }
     }

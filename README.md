@@ -48,4 +48,14 @@ modprobe相比insmod可以在出错的时候打印信息。
 * [linux内核调试（七）使用kdb/kgdb调试内核](https://zhuanlan.zhihu.com/p/546416941)
 * [Linux kernel deb包的构建过程分析并简单手动构建](http://1.15.103.40/post/5.html)
 
-add-symbol-file /home/wang/Documents/vmm/hypervisor-from-scatch/build/linux/x86_64/debug/myhypervisor.ko
+## difference between VMX region and VMCS region
+
+The VMXON region and the VMCS region are two different memory regions that are used for VMX operation. VMXON stands for Virtual Machine Extensions On and VMCS stands for Virtual Machine Control Structure 1.
+
+The VMXON region is created per logical processor and used by it to enable or disable VMX operation. It is a 4-KByte aligned region that contains some data that is not disclosed by Intel. The physical address of this region is used as an operand for the VMXON instruction 231.
+
+The VMCS region is created for each guest virtual CPU (vCPU) and used by both the hypervisor and the processor to manage the state of the vCPU. It is also a 4-KByte aligned region that contains many fields that control various aspects of virtualization, such as guest state, host state, execution control, exit control, etc. The physical address of this region is used as an operand for the VMPTRLD instruction
+
+## 寄存器
+
+https://wiki.osdev.org/CPU_Registers_x86-64
