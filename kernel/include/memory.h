@@ -2,16 +2,15 @@
 #define __MEMORY_H__
 
 #include "./types.h"
+#include "./vmx.h"
 
-typedef struct _VIRTUAL_MACHINE_STATE
-{
-    phys_addr_t VmxonRegion; // VMXON region
-    phys_addr_t VmcsRegion;  // VMCS region
-} VIRTUAL_MACHINE_STATE, *PVIRTUAL_MACHINE_STATE;
 
-// extern VIRTUAL_MACHINE_STATE* g_guest_state;
 
-extern bool initVMX(void);
-extern void exitVMX(void);
+void freeVMCSRegion(VIRTUAL_MACHINE_STATE *guest_state);
 
+void freeVMXRegion(VIRTUAL_MACHINE_STATE *guest_state);
+
+BOOL allocateVMCSRegion(VIRTUAL_MACHINE_STATE *guest_state);
+
+BOOL allocateVMXRegion(VIRTUAL_MACHINE_STATE *guest_state);
 #endif // __MEMORY_H__

@@ -2,9 +2,11 @@
 -- add_packages("linux-headers")
 
 target("myhypervisor")
+    set_values("linux.driver.debug", true)
+    add_cflags("-g -O0")
     add_rules("platform.linux.driver")
-    set_values("linux.driver.linux-headers", "/lib/modules/5.15.0-60-generic/build")
-    add_files("src/*.c")
+    set_values("linux.driver.linux-headers", "/lib/modules/5.15.0/build")
+    add_files("src/*.c", "src/*.S")
 
 
     on_install("linux|x86_64", function (package)

@@ -3,6 +3,7 @@
 #define __OPEN_CLOSE_H__
 
 #include "global.h"
+#include <linux/fs.h>
 
 extern int hyper_open(struct inode *inode, struct file *file);
 

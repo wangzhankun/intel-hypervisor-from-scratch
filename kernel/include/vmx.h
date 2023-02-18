@@ -4,81 +4,32 @@
 #include "global.h"
 
 #include "./types.h"
-#include <asm/vmx.h>
-#include <asm/virtext.h>
+// #include <asm/vmx.h>// /lib/modules/5.15.0-60-generic/build/arch/x86/include/asm/vmx.h defined most of the vmx related structures
+// #include <asm/virtext.h>
 #include "./reg.h"
+#include "eptp.h"
 
 #define ALIGNMENT_PAGE_SIZE 4096
 #define MAXIMUM_ADDRESS 0xffffffffffffffff
 #define VMCS_SIZE 4096
 #define VMXON_SIZE 4096
+#define VMM_STACK_SIZE 0x8000
 
-static inline void _enableVMX(void)
+typedef struct _VIRTUAL_MACHINE_STATE
 {
-    uint64_t cr4 = 0;
+    phys_addr_t VmxonRegion; // VMXON region
+    phys_addr_t VmcsRegion;  // VMCS region
 
-    // enable VMX
-    cr4 = read_cr4();
-    cr4 |= 0x02000;
-    write_cr4(cr4);
-}
-
-#define enableVMX() _enableVMX()
+    uint64_t Eptp;              // extended page table pointer
+    uint64_t VmmStack;          // stack for vmm in vm-exit state, virtual address
+    uint64_t MsrBitmap;         // msr bitmap virtual address
+    uint64_t MsrBitmapPhysical; // msr bitmap physical address
+} VIRTUAL_MACHINE_STATE, *PVIRTUAL_MACHINE_STATE;
 
 
-/**
- * @brief execute vmxon instruction
- * @return
- * 0	The operation succeeded.\n
- * error https://wiki.osdev.org/VMX
- */
-static inline int _vmxon(phys_addr_t *vmxon_region)
-{
-    int error = 0;
-    // TODO 不知道正确性
-    asm volatile(
-        "vmxon %1;"
-        "jnc 1f;"
-        "movl $1, %0;"
-        "1:"
-        : "=r"(error)
-        : "m"(*vmxon_region)
-        : "cc");
-    return error;
-}
-#define vmxon(vmxon_region) _vmxon((phys_addr_t *)&vmxon_region)
+BOOL initVMX(void);
+void exitVMX(void);
 
-static inline int _vmxoff(void)
-{
-    int error = 0;
-    // TODO 不知道正确性
-    asm volatile(
-        "vmxoff;"
-        "jnc 1f;"
-        "movl $1, %0;"
-        "1:"
-        : "=r"(error)
-        :
-        : "cc");
-    return error;
-}
-#define vmxoff() _vmxoff()
-
-static inline int _vmptrld(phys_addr_t *vmcs_region)
-{
-    int error = 0;
-    // TODO 不知道正确性
-    asm volatile(
-        "vmptrld %1;"
-        "jnc 1f;"
-        "movl $1, %0;"
-        "1:"
-        : "=r"(error)
-        : "m"(*vmcs_region)
-        : "cc");
-    return error;
-}
-#define vmptrld(vmcs_region) _vmptrld((phys_addr_t *)&vmcs_region)
-
+void launchVm(int cpu, PEPTP);
 
 #endif /* __VMX_H__ */

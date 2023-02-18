@@ -3,7 +3,7 @@
 
 #include "../include/global.h"
 
-#include <asm/special_insns.h> // 一些特殊指令可以在这里查找
+// #include <asm/special_insns.h> // 一些特殊指令可以在这里查找
 
 
 
