@@ -18,7 +18,7 @@ int hyper_open(struct inode *inode, struct file *file)
 int hyper_close(struct inode *inode, struct file *file)
 {
     LOG_INFO("hyper_close");
-    // exitVMX();
+    exitVMX(); //TODO
     LOG_INFO("disable vmx operation success");
     return 0;
 }

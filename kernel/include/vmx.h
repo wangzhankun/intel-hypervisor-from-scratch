@@ -32,4 +32,6 @@ void exitVMX(void);
 
 void launchVm(int cpu, PEPTP);
 
+bool isSupportedVMX(void);
+
 #endif /* __VMX_H__ */

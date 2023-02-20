@@ -1,4 +1,4 @@
-* [Hypervisor From Scratch](https://rayanfam.com/tags/hypervisor/)
+* [Hypervisor From Scratch](https://rayanfam.com/tags/hypervisor/) 不能迷信这个教程，有好多错误
 * [Linux内核API](https://deepinout.com/linux-kernel-api)
 * [VMX-osdev](https://wiki.osdev.org/VMX)
 * [Intel® 64 and IA-32 Architectures Software Developer’s Manual Combined Volumes: 1, 2A, 2B, 2C, 2D, 3A, 3B, 3C, 3D, and 4](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
@@ -59,3 +59,92 @@ The VMCS region is created for each guest virtual CPU (vCPU) and used by both th
 ## 寄存器
 
 https://wiki.osdev.org/CPU_Registers_x86-64
+
+https://en.wikipedia.org/wiki/Segment_descriptor
+https://wiki.osdev.org/Segment_Selector
+https://en.wikipedia.org/wiki/Global_Descriptor_Table
+
+CS = Code Segment (used for IP)
+
+DS = Data Segment (used for MOV)
+
+ES = Destination Segment (used for MOVS, etc.)
+
+SS = Stack Segment (used for SP)
+
+[Control Register](https://en.wikipedia.org/wiki/Control_register)
+
+
+![](./images/CRRegisters.png)
+
+
+## 错误
+
+错误位在RFLAGS中
+
+The operation sections also use the pseudo-functions VMsucceed, VMfail, VMfailInvalid, and VMfailValid. These 
+pseudo-functions signal instruction success or failure by setting or clearing bits in RFLAGS and, in some cases, by 
+writing the VM-instruction error field. The following pseudocode fragments detail these functions:
+
+VMsucceed:
+    CF := 0;
+    PF := 0;
+    AF := 0;
+    ZF := 0;
+    SF := 0;
+    OF := 0;
+
+VMfail(ErrorNumber):
+    IF VMCS pointer is valid
+    THEN VMfailValid(ErrorNumber);
+    ELSE VMfailInvalid;
+    FI;
+
+VMfailInvalid:
+    CF := 1;
+    PF := 0;
+    AF := 0;
+    ZF := 0;
+    SF := 0;
+    OF := 0;
+
+VMfailValid(ErrorNumber):// executed only if there is a current VMCS
+    CF := 0;
+    PF := 0;
+    AF := 0;
+    ZF := 1;
+    SF := 0;
+    OF := 0;
+
+Set the VM-instruction error field to ErrorNumber;
+The different VM-instruction error numbers are enumerated in Section 31.4, “VM Instruction Error Numbers”.
+
+### vmread读出的错误码
+
+vmread读出的错误码如果bits:31被设置了，则bits15:0表示的是VM-ENTRY时的错误，如果bits:31没有被设置则bits15:0表示的是VM-EXIT时的错误。
+
+VOLUME3 APPENDIX C
+VMX BASIC EXIT REASONS
+
+### EXIT_QUALIFICATION
+VOLUME3 Table 28-1. Exit Qualification for Debug Exceptions
+
+## 汇编指令
+
+### SETBE/SETNA
+
+SETBE/SETNA - Set if Below or Equal / Set if Not Above (386+)
+
+        Usage:  SETBE   dest
+                SETNA   dest
+        (unsigned, 386+)
+        Modifies flags: none
+
+        Sets the byte in the operand to 1 if the Carry Flag or the Zero
+        Flag is set, otherwise sets the operand to 0.
+
+                                 Clocks                 Size
+        Operands         808x  286   386   486          Bytes
+
+        reg8              -     -     4     3             3
+        mem8              -     -     5     4             3

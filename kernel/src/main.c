@@ -47,6 +47,16 @@ static int __init misc_init(void)
         return ret;
     }
 
+    if (isSupportedVMX())
+    {
+        LOG_INFO("vmx is supported");
+    }
+    else
+    {
+        LOG_ERR("vmx is not supported");
+        return -1;
+    }
+
     g_eptp = initEPT();
     if (g_eptp == NULL)
     {
@@ -66,10 +76,10 @@ static int __init misc_init(void)
 
     for (size_t i = 0; i < (100 * PAGE_SIZE) - 1; i++)
     {
-        void *TempAsm = "\xF4";
-        memcpy(g_virtual_guest_memory_address + i, TempAsm, 1);
+        // void *TempAsm = "\xF4";
+        char TempAsm = 0xf4;
+        memcpy(g_virtual_guest_memory_address + i, &TempAsm, 1);
     }
-
 
     LOG_INFO(MODULENAME " register success\n");
 
@@ -81,8 +91,6 @@ static void misc_exit(void)
     destoryEPT(g_eptp);
     g_eptp = NULL;
 
-    // TODO
-    // exitVMX();
 
     misc_deregister(&hypervisor_cdev);
 

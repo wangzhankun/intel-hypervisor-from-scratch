@@ -88,15 +88,15 @@ typedef union SEGMENT_ATTRIBUTES
 } SEGMENT_ATTRIBUTES;
 
 typedef struct SEGMENT_SELECTOR
-{
+{ // https://wiki.osdev.org/Segment_Selector
 	uint16_t SEL;
 	SEGMENT_ATTRIBUTES ATTRIBUTES;
 	uint32_t LIMIT;
 	uint64_t BASE;
 } SEGMENT_SELECTOR, *PSEGMENT_SELECTOR;
 
-typedef struct _SEGMENT_DESCRIPTOR
-{
+typedef union _SEGMENT_DESCRIPTOR
+{ //
 	uint16_t LIMIT0;
 	uint16_t BASE0;
 	unsigned char BASE1;
@@ -104,6 +104,36 @@ typedef struct _SEGMENT_DESCRIPTOR
 	unsigned char LIMIT1ATTR1;
 	unsigned char BASE2;
 } SEGMENT_DESCRIPTOR, *PSEGMENT_DESCRIPTOR;
+
+typedef union
+{
+	uint64_t All;
+	struct
+	{
+		uint64_t CF : 1;
+		uint64_t Reserved1 : 1;
+		uint64_t PF : 1;
+		uint64_t Reserved2 : 1;
+		uint64_t AF : 1;
+		uint64_t Reserved3 : 1;
+		uint64_t ZF : 1;   // zero flag
+		uint64_t SF : 1;   // sign flag
+		uint64_t TF : 1;   // trap flag
+		uint64_t IF : 1;   // interrupt enable flag
+		uint64_t DF : 1;   // direction flag
+		uint64_t OF : 1;   // overflow flag
+		uint64_t IOPL : 2; // I/O privilege level
+		uint64_t NT : 1;   // nested task
+		uint64_t Reserved4 : 1;
+		uint64_t RF : 1;  // resume flag
+		uint64_t VM : 1;  // virtual 8086 mode
+		uint64_t AC : 1;  // alignment check
+		uint64_t VIF : 1; // virtual interrupt flag
+		uint64_t VIP : 1; // virtual interrupt pending
+		uint64_t ID : 1;  // ID flag
+		uint64_t Reserved5 : 42;
+	} Fields;
+} RFLAGs;
 
 // the following is copied from linux-6.0.18/tools/testing/selftests/kvm/include/x86_64/processor.h
 
@@ -244,22 +274,34 @@ static inline uint16_t get_ds(void)
 	return ds;
 }
 
-static inline uint16_t get_fs(void)
+static inline uint64_t get_fs(void)
 {
-	uint16_t fs;
+	uint64_t fs = 0;
 
 	__asm__ __volatile__("mov %%fs, %[fs]"
 						 : /* output */[fs] "=rm"(fs));
 	return fs;
 }
-
-static inline uint16_t get_gs(void)
+static inline uint64_t get_gs(void)
 {
-	uint16_t gs;
+	uint64_t gs = 0;
 
 	__asm__ __volatile__("mov %%gs, %[gs]"
 						 : /* output */[gs] "=rm"(gs));
 	return gs;
+}
+
+static inline uint16_t get_ldt(void)
+{
+	// https://www.felixcloutier.com/x86/sldt
+	// The behavior of SLDT with a 64-bit register is to zero-extend the 16-bit selector and store it in the register.
+	// If the destination is memory and operand size is 64,
+	// SLDT will write the 16-bit selector to memory as a 16-bit quantity, regardless of the operand size.
+	uint16_t ldt;
+
+	__asm__ __volatile__("sldt %[ldt]"
+						 : /* output */[ldt] "=rm"(ldt));
+	return ldt;
 }
 
 static inline uint16_t get_tr(void)
@@ -306,7 +348,7 @@ static inline void set_cr4(uint64_t val)
 						 : "memory");
 }
 
-static inline uint64_t get_rflags(void)
+static inline RFLAGs get_rflags(void)
 {
 	// https://www.felixcloutier.com/x86/pushf:pushfd:pushfq
 	uint64_t rax;
@@ -314,10 +356,12 @@ static inline uint64_t get_rflags(void)
 		"pushfq\n\t"
 		"pop %%rax\n\t"
 		"mov %%rax, %[rax]"
-		: [rax] "=r"(rax)
-	);
+		: [rax] "=r"(rax));
 
-	return rax;
+	RFLAGs rf = {0};
+	rf.All = rax;
+
+	return rf;
 }
 
 static inline struct DescPtr get_gdt(void)
@@ -334,6 +378,18 @@ static inline struct DescPtr get_idt(void)
 	__asm__ __volatile__("sidt %[idt]"
 						 : /* output */[idt] "=m"(idt));
 	return idt;
+}
+
+static inline uint64_t get_msr(uint32_t msr)
+{
+	uint32_t a, d;
+
+	__asm__ __volatile__("rdmsr"
+						 : "=a"(a), "=d"(d)
+						 : "c"(msr)
+						 : "memory");
+
+	return a | ((uint64_t)d << 32);
 }
 
 // static inline void outl(uint16_t port, uint32_t value)

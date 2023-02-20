@@ -10,6 +10,7 @@
 #define MODULENAME "myhypervisor"
 
 #define BREAKPOINT() kgdb_breakpoint()
+// #define BREAKPOINT() 
 
 
 // https://www.kernel.org/doc/html/latest/core-api/printk-basics.html

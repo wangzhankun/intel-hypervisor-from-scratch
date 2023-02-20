@@ -152,18 +152,33 @@ __attribute__((regparm(0))) void vmread_error_trampoline(unsigned long field,
                                                          bool fault);
 void kvm_spurious_fault(void);
 
-
+static __always_inline int parseRflagForVmxOperation(void)
+{
+    RFLAGs rf = get_rflags();
+    if (rf.Fields.CF)
+    {
+        LOG_INFO("VMfailInvalid");
+        return -1;
+    }
+    else if (rf.Fields.ZF)
+    {
+        LOG_INFO("VMfailValid");
+        return -1;
+    }
+    else
+    {
+        LOG_INFO("VMsuccess");
+        return 0;
+    }
+}
 
 static inline int vmxon(uint64_t phys)
 {
-    uint8_t ret;
-
-    __asm__ __volatile__("vmxon %[pa]; setna %[ret]"
-                         : [ret] "=rm"(ret)
+    __asm__ __volatile__("vmxon %[pa]"
+                         :
                          : [pa] "m"(phys)
                          : "cc", "memory");
-
-    return ret;
+    return parseRflagForVmxOperation();
 }
 
 static inline void vmxoff(void)
@@ -173,29 +188,24 @@ static inline void vmxoff(void)
 
 static inline int vmclear(uint64_t vmcs_pa)
 {
-    uint8_t ret;
 
-    __asm__ __volatile__("vmclear %[pa]; setna %[ret]"
-                         : [ret] "=rm"(ret)
+    __asm__ __volatile__("vmclear %[pa];"
+                         :
                          : [pa] "m"(vmcs_pa)
                          : "cc", "memory");
 
-    return ret;
+    return parseRflagForVmxOperation();
 }
 
 static inline int vmptrld(uint64_t vmcs_pa)
 {
-    uint8_t ret;
 
-    // if (enable_evmcs)
-    //     return -1;
-
-    __asm__ __volatile__("vmptrld %[pa]; setna %[ret]"
-                         : [ret] "=rm"(ret)
+    __asm__ __volatile__("vmptrld %[pa];"
+                         :
                          : [pa] "m"(vmcs_pa)
                          : "cc", "memory");
 
-    return ret;
+    return parseRflagForVmxOperation();
 }
 
 static inline int vmptrst(uint64_t *value)
@@ -267,41 +277,19 @@ static inline void vmcall(void)
         pr_warn_ratelimited(fmt); \
     } while (0)
 
-static __always_inline unsigned long vmread(unsigned long field)
+static __always_inline unsigned long vmread(uint64_t encoding, uint64_t *value)
 {
-    unsigned long value;
+    uint64_t tmp;
+    uint8_t ret;
 
-    asm volatile("1: vmread %2, %1\n\t"
-                 ".byte 0x3e\n\t" /* branch taken hint */
-                 "ja 3f\n\t"
 
-                 /*
-                  * VMREAD failed.  Push '0' for @fault, push the failing
-                  * @field, and bounce through the trampoline to preserve
-                  * volatile registers.
-                  */
-                 "push $0\n\t"
-                 "push %2\n\t"
-                 "2:call vmread_error_trampoline\n\t"
+    __asm__ __volatile__("vmread %[encoding], %[value]; setna %[ret]"
+                         : [value] "=rm"(tmp), [ret] "=rm"(ret)
+                         : [encoding] "r"(encoding)
+                         : "cc", "memory");
 
-                 /*
-                  * Unwind the stack.  Note, the trampoline zeros out the
-                  * memory for @fault so that the result is '0' on error.
-                  */
-                 "pop %2\n\t"
-                 "pop %1\n\t"
-                 "3:\n\t"
-
-                 /* VMREAD faulted.  As above, except push '1' for @fault. */
-                 ".pushsection .fixup, \"ax\"\n\t"
-                 "4: push $1\n\t"
-                 "push %2\n\t"
-                 "jmp 2b\n\t"
-                 ".popsection\n\t" _ASM_EXTABLE(1b, 4b)
-                 : ASM_CALL_CONSTRAINT, "=r"(value)
-                 : "r"(field)
-                 : "cc");
-    return value;
+    *value = tmp;
+    return ret;
 }
 
 /*
@@ -310,23 +298,19 @@ static __always_inline unsigned long vmread(unsigned long field)
  */
 static inline uint64_t vmreadz(uint64_t encoding)
 {
-    uint64_t value = vmread(encoding);
+    uint64_t value = 0;
+    vmread(encoding, &value);
     return value;
 }
 
 static inline int vmwrite(uint64_t encoding, uint64_t value)
 {
-    uint8_t ret;
-
-    // if (enable_evmcs)
-    //     return evmcs_vmwrite(encoding, value);
-
-    __asm__ __volatile__("vmwrite %[value], %[encoding]; setna %[ret]"
-                         : [ret] "=rm"(ret)
+    __asm__ __volatile__("vmwrite %[value], %[encoding]"
+                         :
                          : [value] "rm"(value), [encoding] "r"(encoding)
                          : "cc", "memory");
 
-    return ret;
+    return parseRflagForVmxOperation();
 }
 
 // #define __vmx_vmon(phys) vmxon(phys)

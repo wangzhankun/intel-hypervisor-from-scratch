@@ -52,5 +52,5 @@ VmexitHandler:
         pop %r14
         pop %r15
 
-        sub 0x0100, %rsp
+        sub $0x0100, %rsp
         jmp VmResumeInstruction

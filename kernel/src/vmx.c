@@ -7,12 +7,15 @@
 
 #include "../include/vmx_inst.h"
 #include "../include/reg.h"
+#include <asm/msr.h>
 
 static VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
 static cpumask_var_t cpus_hardware_enabled;
 
 uint64_t g_stack_pointer_for_returning;
 uint64_t g_base_pointer_for_returning;
+
+extern void VmentryHandler(void); // defined in VmentryHandler.s
 
 extern void VmexitHandler(void); // defined in VmexitHandler.s
 
@@ -22,15 +25,24 @@ static bool enableVMX(VIRTUAL_MACHINE_STATE *guest_state)
 
     // enable VMX
     cr4 = get_cr4();
-    cr4 |= 0x02000;//13th bit 	Virtual Machine Extensions Enable, https://wiki.osdev.org/CPU_Registers_x86-64#CR4
+    if (cr4 & X86_CR4_VMXE)
+    {
+        LOG_ERR("VMX is already enabled");
+        return false;
+    }
+    cr4 |= X86_CR4_VMXE;
     set_cr4(cr4);
+    LOG_INFO("VMX is enabled");
 
     // get IA32_VMX_BASIC MSR RevisionId
     IA32_VMX_BASIC_MSR_BITs vmx_basic = {0};
-    rdmsrl(MSR_IA32_VMX_BASIC, vmx_basic.All);
+    vmx_basic.All = get_msr(MSR_IA32_VMX_BASIC);
 
     // set the revision id to the vmxon region
-    *(uint64_t *)(__va(guest_state->VmxonRegion)) = vmx_basic.Fields.RevisionId;
+    *(uint32_t *)(__va(guest_state->VmxonRegion)) = vmx_basic.Fields.RevisionId;
+
+    // set the revision id to the vmcs region
+    *(uint32_t *)(__va(guest_state->VmcsRegion)) = vmx_basic.Fields.RevisionId;
 
     // check if the vmxon region is supported
     if (vmxon(guest_state->VmxonRegion) != 0) // execute vmxon instruction
@@ -39,24 +51,25 @@ static bool enableVMX(VIRTUAL_MACHINE_STATE *guest_state)
         return false;
     }
 
-
-    // set the revision id to the vmcs region
-    *(uint64_t *)(__va(guest_state->VmcsRegion)) = vmx_basic.Fields.RevisionId;
-
-    // check if the vmcs region is supported
-    if(vmptrld(guest_state->VmcsRegion) != 0)
-    {
-        LOG_ERR("vmptrld failed");
-        return false;
-    }
-
     return true;
 }
 
-static void disableVMX(VIRTUAL_MACHINE_STATE* guest_state)
+static void disableVMX(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    vmclear(guest_state->VmcsRegion);
-    vmxoff();
+    uint64_t cr4 = get_cr4();
+    if (!(cr4 & X86_CR4_VMXE))
+    {
+        LOG_ERR("VMX is already disabled");
+        return;
+    }
+    else
+    {
+        vmclear(guest_state->VmcsRegion);
+        vmxoff();
+        cr4 &= ~X86_CR4_VMXE;
+        set_cr4(cr4);
+        LOG_INFO("VMX is disabled");
+    }
 }
 
 static void terminateVMX(void *unused)
@@ -74,7 +87,6 @@ static void terminateVMX(void *unused)
     }
 
     cpumask_clear_cpu(cpu, cpus_hardware_enabled);
-
 
     disableVMX(guest_state);
     freeVMCSRegion(guest_state);
@@ -94,7 +106,6 @@ static void initializeVMX(void *unused)
 
     cpumask_set_cpu(cpu, cpus_hardware_enabled);
 
-
     if (!allocateVMXRegion(guest_state))
     {
         cpumask_clear_cpu(cpu, cpus_hardware_enabled);
@@ -110,7 +121,7 @@ static void initializeVMX(void *unused)
         return;
     }
 
-    if(enableVMX(guest_state) == false)
+    if (enableVMX(guest_state) == false)
     {
         cpumask_clear_cpu(cpu, cpus_hardware_enabled);
         freeVMCSRegion(guest_state);
@@ -118,7 +129,6 @@ static void initializeVMX(void *unused)
         LOG_ERR("Failed to enable VMX on CPU %d", cpu);
         return;
     }
-
 
     return;
 }
@@ -142,12 +152,6 @@ BOOL initVMX(void)
         g_guest_state[i].VmcsRegion = 0;
     }
 
-    if(cpu_has_vmx() == false)
-    {
-        LOG_ERR("VMX is not supported");
-        return false;
-    }
-
     if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
     {
         LOG_ERR("Failed to allocate cpumask");
@@ -160,23 +164,20 @@ BOOL initVMX(void)
     return cpu_num == num_online_cpus();
 }
 
-BOOL clearVMCSState(VIRTUAL_MACHINE_STATE *guest_state)
+static int clearVMCSState(VIRTUAL_MACHINE_STATE *guest_state)
 {
     if (!guest_state || !guest_state->VmcsRegion)
-        return false;
+        return -1;
 
-    vmclear(guest_state->VmcsRegion);
-
-    return true;
+    return vmclear(guest_state->VmcsRegion);
 }
 
-BOOL loadVMCS(VIRTUAL_MACHINE_STATE *guest_state)
+static int loadVMCS(VIRTUAL_MACHINE_STATE *guest_state)
 {
     if (!guest_state || !guest_state->VmcsRegion)
-        return false;
+        return -1;
 
-    vmptrld((guest_state->VmcsRegion));
-    return true;
+    return vmptrld((guest_state->VmcsRegion));
 }
 
 BOOL getSegmentDescriptor(PSEGMENT_SELECTOR SegmentSelector,
@@ -190,6 +191,9 @@ BOOL getSegmentDescriptor(PSEGMENT_SELECTOR SegmentSelector,
 
     if (Selector & 0x4)
     {
+        // Bits 3-15 of the Index of the GDT or LDT entry referenced by the selector.
+        // Since Segment Descriptors are 8 bytes in length,
+        // the value of Index is never unaligned and contains all zeros in the lowest 3 bits.
         return false;
     }
 
@@ -217,28 +221,33 @@ BOOL getSegmentDescriptor(PSEGMENT_SELECTOR SegmentSelector,
     return true;
 }
 
-void fillGuestSelectorData(void *GdtBase, uint32_t Segreg, uint16_t Selector)
+BOOL fillGuestSelectorData(void *GdtBase, uint32_t Segreg, uint16_t Selector)
 {
     SEGMENT_SELECTOR SegmentSelector = {0};
     uint32_t AccessRights;
 
-    getSegmentDescriptor(&SegmentSelector, Selector, GdtBase);
+    if (!getSegmentDescriptor(&SegmentSelector, Selector, GdtBase))
+    {
+        LOG_ERR("Failed to get segment descriptor for selector 0x%x, Segreg = %d, GdtBase = 0x%llx", Selector, Segreg, GdtBase);
+        return false;
+    }
 
     AccessRights = ((unsigned char *)&SegmentSelector.ATTRIBUTES)[0] + (((unsigned char *)&SegmentSelector.ATTRIBUTES)[1] << 12);
 
     if (!Selector)
         AccessRights |= 0x10000;
 
-    vmwrite(GUEST_ES_SELECTOR + Segreg * 2, Selector);
-    vmwrite(GUEST_ES_LIMIT + Segreg * 2, SegmentSelector.LIMIT);
-    vmwrite(GUEST_ES_AR_BYTES + Segreg * 2, AccessRights);
-    vmwrite(GUEST_ES_BASE + Segreg * 2, SegmentSelector.BASE);
+    vmwrite(GUEST_ES_SELECTOR + Segreg * 2, Selector & 0xfff8);
+    vmwrite(GUEST_ES_LIMIT + Segreg * 2, SegmentSelector.LIMIT & 0xfff8);
+    // vmwrite(GUEST_ES_AR_BYTES + Segreg * 2, AccessRights);
+    vmwrite(GUEST_ES_AR_BYTES + Segreg * 2, 0x10000);
+    vmwrite(GUEST_ES_BASE + Segreg * 2, SegmentSelector.BASE & 0xfff8);
+    return true;
 }
 
 uint32_t AdjustControls(uint32_t ctl, uint32_t msr)
 {
-    uint64_t msr_value;
-    rdmsrl(msr, msr_value);
+    uint64_t msr_value = get_msr(msr);
     ctl &= msr_value >> 32;
     ctl |= msr_value & 0xffffffff;
     return ctl;
@@ -246,124 +255,175 @@ uint32_t AdjustControls(uint32_t ctl, uint32_t msr)
 
 void initVmcsControlFields(void)
 {
+    vmwrite(TSC_OFFSET, -(1ll << 48));
+
+    // Link Shadow VMCS
     vmwrite(VMCS_LINK_POINTER, ~0ULL);
+    vmwrite(VMCS_LINK_POINTER_HIGH, ~0ULL);
 
-    /* Time-stamp counter offset */
-    vmwrite(TSC_OFFSET, 0);
-    vmwrite(TSC_OFFSET_HIGH, 0);
+    uint32_t sec_exec_ctl = 0;
 
+    vmwrite(VIRTUAL_PROCESSOR_ID, 0);
+    vmwrite(POSTED_INTR_NV, 0);
+
+    vmwrite(PIN_BASED_VM_EXEC_CONTROL, get_msr(MSR_IA32_VMX_TRUE_PINBASED_CTLS));
+
+    if (!vmwrite(SECONDARY_VM_EXEC_CONTROL, sec_exec_ctl))
+        vmwrite(CPU_BASED_VM_EXEC_CONTROL,
+                get_msr(MSR_IA32_VMX_TRUE_PROCBASED_CTLS) | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS);
+    else
+    {
+        vmwrite(CPU_BASED_VM_EXEC_CONTROL, get_msr(MSR_IA32_VMX_TRUE_PROCBASED_CTLS));
+        // GUEST_ASSERT(!sec_exec_ctl);
+        if (!sec_exec_ctl)
+            BREAKPOINT();
+    }
+
+    vmwrite(EXCEPTION_BITMAP, 0);
     vmwrite(PAGE_FAULT_ERROR_CODE_MASK, 0);
-    vmwrite(PAGE_FAULT_ERROR_CODE_MATCH, 0);
-
+    vmwrite(PAGE_FAULT_ERROR_CODE_MATCH, -1); /* Never match */
+    vmwrite(CR3_TARGET_COUNT, 0);
+    vmwrite(VM_EXIT_CONTROLS, get_msr(MSR_IA32_VMX_EXIT_CTLS) |
+                                  VM_EXIT_HOST_ADDR_SPACE_SIZE); /* 64-bit host */
     vmwrite(VM_EXIT_MSR_STORE_COUNT, 0);
     vmwrite(VM_EXIT_MSR_LOAD_COUNT, 0);
-
+    vmwrite(VM_ENTRY_CONTROLS, get_msr(MSR_IA32_VMX_ENTRY_CTLS) |
+                                   VM_ENTRY_IA32E_MODE); /* 64-bit guest */
     vmwrite(VM_ENTRY_MSR_LOAD_COUNT, 0);
     vmwrite(VM_ENTRY_INTR_INFO_FIELD, 0);
+    vmwrite(TPR_THRESHOLD, 0);
 
-    vmwrite(CPU_BASED_VM_EXEC_CONTROL, AdjustControls(CPU_BASED_HLT_EXITING | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS, MSR_IA32_VMX_PROCBASED_CTLS));
-    vmwrite(SECONDARY_VM_EXEC_CONTROL, AdjustControls(SECONDARY_EXEC_ENABLE_RDTSCP /* | CPU_BASED_CTL2_ENABLE_EPT*/, MSR_IA32_VMX_PROCBASED_CTLS2));
-
-    vmwrite(PIN_BASED_VM_EXEC_CONTROL, AdjustControls(0, MSR_IA32_VMX_PINBASED_CTLS));
-    vmwrite(VM_EXIT_CONTROLS, AdjustControls(VM_EXIT_IA32E_MODE | VM_EXIT_ACK_INTR_ON_EXIT, MSR_IA32_VMX_EXIT_CTLS));
-    vmwrite(VM_ENTRY_CONTROLS, AdjustControls(VM_ENTRY_IA32E_MODE, MSR_IA32_VMX_ENTRY_CTLS));
-
-    vmwrite(CR3_TARGET_COUNT, 0);
-    vmwrite(CR3_TARGET_VALUE0, 0);
-    vmwrite(CR3_TARGET_VALUE1, 0);
-    vmwrite(CR3_TARGET_VALUE2, 0);
-    vmwrite(CR3_TARGET_VALUE3, 0);
+    vmwrite(CR0_GUEST_HOST_MASK, 0);
+    vmwrite(CR4_GUEST_HOST_MASK, 0);
+    vmwrite(CR0_READ_SHADOW, get_cr0());
+    vmwrite(CR4_READ_SHADOW, get_cr4());
 }
 
 void initVmcsHostState(void)
 {
-    struct DescPtr gdt = get_gdt();
-    SEGMENT_SELECTOR SegmentSelector = {0};
-    getSegmentDescriptor(&SegmentSelector, get_tr(), (unsigned char *)gdt.address);
-    vmwrite(HOST_TR_BASE, SegmentSelector.BASE);
+    uint32_t exit_controls = vmreadz(VM_EXIT_CONTROLS);
 
-    vmwrite(HOST_ES_SELECTOR, get_es() & 0xf8);
-    vmwrite(HOST_CS_SELECTOR, get_cs() & 0xf8);
-    vmwrite(HOST_SS_SELECTOR, get_ss() & 0xF8);
-    vmwrite(HOST_DS_SELECTOR, get_ds() & 0xF8);
-    vmwrite(HOST_FS_SELECTOR, get_gs() & 0xF8);
-    vmwrite(HOST_GS_SELECTOR, get_gs() & 0xF8);
-    vmwrite(HOST_TR_SELECTOR, get_tr() & 0xF8);
+    vmwrite(HOST_ES_SELECTOR, get_es());
+    vmwrite(HOST_CS_SELECTOR, get_cs());
+    vmwrite(HOST_SS_SELECTOR, get_ss());
+    vmwrite(HOST_DS_SELECTOR, get_ds());
+    vmwrite(HOST_FS_SELECTOR, get_fs());
+    vmwrite(HOST_GS_SELECTOR, get_gs());
+    vmwrite(HOST_TR_SELECTOR, get_tr());
+
+    if (exit_controls & VM_EXIT_LOAD_IA32_PAT)
+        vmwrite(HOST_IA32_PAT, get_msr(MSR_IA32_CR_PAT));
+    if (exit_controls & VM_EXIT_LOAD_IA32_EFER)
+        vmwrite(HOST_IA32_EFER, get_msr(MSR_EFER));
+    if (exit_controls & VM_EXIT_LOAD_IA32_PERF_GLOBAL_CTRL)
+        vmwrite(HOST_IA32_PERF_GLOBAL_CTRL,
+                get_msr(MSR_CORE_PERF_GLOBAL_CTRL));
+
+    vmwrite(HOST_IA32_SYSENTER_CS, get_msr(MSR_IA32_SYSENTER_CS));
 
     vmwrite(HOST_CR0, get_cr0());
     vmwrite(HOST_CR3, get_cr3());
     vmwrite(HOST_CR4, get_cr4());
-
-    vmwrite(HOST_FS_BASE, paravirt_read_msr(MSR_FS_BASE));
-    vmwrite(HOST_GS_BASE, paravirt_read_msr(MSR_GS_BASE));
-
-    vmwrite(HOST_GDTR_BASE, gdt.address);
+    vmwrite(HOST_FS_BASE, get_msr(MSR_FS_BASE));
+    vmwrite(HOST_GS_BASE, get_msr(MSR_GS_BASE));
+    vmwrite(HOST_TR_BASE,
+            get_desc64_base((struct desc64 *)(get_gdt().address + get_tr())));
+    vmwrite(HOST_GDTR_BASE, get_gdt().address);
     vmwrite(HOST_IDTR_BASE, get_idt().address);
-
-    vmwrite(HOST_IA32_SYSENTER_CS, paravirt_read_msr(MSR_IA32_SYSENTER_CS));
-    vmwrite(HOST_IA32_SYSENTER_EIP, paravirt_read_msr(MSR_IA32_SYSENTER_EIP));
-    vmwrite(HOST_IA32_SYSENTER_ESP, paravirt_read_msr(MSR_IA32_SYSENTER_ESP));
+    vmwrite(HOST_IA32_SYSENTER_ESP, get_msr(MSR_IA32_SYSENTER_ESP));
+    vmwrite(HOST_IA32_SYSENTER_EIP, get_msr(MSR_IA32_SYSENTER_EIP));
 }
 
 void initVmcsGuestState(void)
 {
-    struct DescPtr gdt = get_gdt();
+    vmwrite(GUEST_ES_SELECTOR, vmreadz(HOST_ES_SELECTOR));
+    vmwrite(GUEST_CS_SELECTOR, vmreadz(HOST_CS_SELECTOR));
+    vmwrite(GUEST_SS_SELECTOR, vmreadz(HOST_SS_SELECTOR));
+    vmwrite(GUEST_DS_SELECTOR, vmreadz(HOST_DS_SELECTOR));
+    vmwrite(GUEST_FS_SELECTOR, vmreadz(HOST_FS_SELECTOR));
+    vmwrite(GUEST_GS_SELECTOR, vmreadz(HOST_GS_SELECTOR));
+    vmwrite(GUEST_LDTR_SELECTOR, 0);
+    vmwrite(GUEST_TR_SELECTOR, vmreadz(HOST_TR_SELECTOR));
+    vmwrite(GUEST_INTR_STATUS, 0);
+    vmwrite(GUEST_PML_INDEX, 0);
 
-    uint64_t temp = 0;
+    vmwrite(VMCS_LINK_POINTER, -1ll);
+    vmwrite(GUEST_IA32_DEBUGCTL, 0);
+    vmwrite(GUEST_IA32_PAT, vmreadz(HOST_IA32_PAT));
+    vmwrite(GUEST_IA32_EFER, vmreadz(HOST_IA32_EFER));
+    vmwrite(GUEST_IA32_PERF_GLOBAL_CTRL,
+            vmreadz(HOST_IA32_PERF_GLOBAL_CTRL));
 
-    rdmsrl(MSR_IA32_DEBUGCTLMSR, temp);
-    vmwrite(GUEST_IA32_DEBUGCTL, temp & 0xFFFFFFFF);
-    vmwrite(GUEST_IA32_DEBUGCTL_HIGH, temp >> 32);
-
-    fillGuestSelectorData(gdt.address, ES, get_es());
-    fillGuestSelectorData(gdt.address, CS, get_cs());
-    fillGuestSelectorData(gdt.address, SS, get_ss());
-    fillGuestSelectorData(gdt.address, DS, get_ds());
-    fillGuestSelectorData(gdt.address, FS, get_fs());
-    fillGuestSelectorData(gdt.address, GS, get_gs());
-    fillGuestSelectorData(gdt.address, TR, get_tr());
-
-    vmwrite(GUEST_FS_BASE, paravirt_read_msr(MSR_FS_BASE));
-    vmwrite(GUEST_GS_BASE, paravirt_read_msr(MSR_GS_BASE));
-
+    vmwrite(GUEST_ES_LIMIT, -1);
+    vmwrite(GUEST_CS_LIMIT, -1);
+    vmwrite(GUEST_SS_LIMIT, -1);
+    vmwrite(GUEST_DS_LIMIT, -1);
+    vmwrite(GUEST_FS_LIMIT, -1);
+    vmwrite(GUEST_GS_LIMIT, -1);
+    vmwrite(GUEST_LDTR_LIMIT, -1);
+    vmwrite(GUEST_TR_LIMIT, 0x67);
+    vmwrite(GUEST_GDTR_LIMIT, 0xffff);
+    vmwrite(GUEST_IDTR_LIMIT, 0xffff);
+    vmwrite(GUEST_ES_AR_BYTES,
+            vmreadz(GUEST_ES_SELECTOR) == 0 ? 0x10000 : 0xc093);
+    vmwrite(GUEST_CS_AR_BYTES, 0xa09b);
+    vmwrite(GUEST_SS_AR_BYTES, 0xc093);
+    vmwrite(GUEST_DS_AR_BYTES,
+            vmreadz(GUEST_DS_SELECTOR) == 0 ? 0x10000 : 0xc093);
+    vmwrite(GUEST_FS_AR_BYTES,
+            vmreadz(GUEST_FS_SELECTOR) == 0 ? 0x10000 : 0xc093);
+    vmwrite(GUEST_GS_AR_BYTES,
+            vmreadz(GUEST_GS_SELECTOR) == 0 ? 0x10000 : 0xc093);
+    vmwrite(GUEST_LDTR_AR_BYTES, 0x10000);
+    vmwrite(GUEST_TR_AR_BYTES, 0x8b);
     vmwrite(GUEST_INTERRUPTIBILITY_INFO, 0);
-    vmwrite(GUEST_ACTIVITY_STATE, 0); // Active state
+    vmwrite(GUEST_ACTIVITY_STATE, 0);
+    vmwrite(GUEST_SYSENTER_CS, vmreadz(HOST_IA32_SYSENTER_CS));
+    vmwrite(VMX_PREEMPTION_TIMER_VALUE, 0);
 
-    vmwrite(GUEST_CR0, get_cr0());
-    vmwrite(GUEST_CR3, get_cr3());
-    vmwrite(GUEST_CR4, get_cr4());
-
+    vmwrite(GUEST_CR0, vmreadz(HOST_CR0));
+    vmwrite(GUEST_CR3, vmreadz(HOST_CR3));
+    vmwrite(GUEST_CR4, vmreadz(HOST_CR4));
+    vmwrite(GUEST_ES_BASE, 0);
+    vmwrite(GUEST_CS_BASE, 0);
+    vmwrite(GUEST_SS_BASE, 0);
+    vmwrite(GUEST_DS_BASE, 0);
+    vmwrite(GUEST_FS_BASE, vmreadz(HOST_FS_BASE));
+    vmwrite(GUEST_GS_BASE, vmreadz(HOST_GS_BASE));
+    vmwrite(GUEST_LDTR_BASE, 0);
+    vmwrite(GUEST_TR_BASE, vmreadz(HOST_TR_BASE));
+    vmwrite(GUEST_GDTR_BASE, vmreadz(HOST_GDTR_BASE));
+    vmwrite(GUEST_IDTR_BASE, vmreadz(HOST_IDTR_BASE));
     vmwrite(GUEST_DR7, 0x400);
+    // vmwrite(GUEST_RSP, (uint64_t)rsp);
+    // vmwrite(GUEST_RIP, (uint64_t)rip);
+    vmwrite(GUEST_RFLAGS, 2);
+    vmwrite(GUEST_PENDING_DBG_EXCEPTIONS, 0);
+    vmwrite(GUEST_SYSENTER_ESP, vmreadz(HOST_IA32_SYSENTER_ESP));
+    vmwrite(GUEST_SYSENTER_EIP, vmreadz(HOST_IA32_SYSENTER_EIP));
 
-    vmwrite(GUEST_GDTR_BASE, gdt.address);
-    vmwrite(GUEST_IDTR_BASE, get_idt().address);
-    vmwrite(GUEST_GDTR_LIMIT, gdt.size);
-    vmwrite(GUEST_IDTR_LIMIT, get_idt().size);
-
-    // vmwrite(GUEST_RFLAGS, 2);// tools/testing/selftests/kvm/lib/x86_64/vmx.c
-    vmwrite(GUEST_RFLAGS, get_rflags());
-
-    vmwrite(GUEST_SYSENTER_CS, paravirt_read_msr(MSR_IA32_SYSENTER_CS));
-    vmwrite(GUEST_SYSENTER_EIP, paravirt_read_msr(MSR_IA32_SYSENTER_EIP));
-    vmwrite(GUEST_SYSENTER_ESP, paravirt_read_msr(MSR_IA32_SYSENTER_ESP));
+    // vmwrite(MSR_BITMAP, vmx->msr_gpa);
+    // vmwrite(VMREAD_BITMAP, vmx->vmread_gpa);
+    // vmwrite(VMWRITE_BITMAP, vmx->vmwrite_gpa);
 }
 
 void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPTP eptp)
 {
+    initVmcsControlFields();
+    LOG_INFO("initVmcsControlFields success");
     initVmcsHostState();
     LOG_INFO("initVmcsHostState success");
     initVmcsGuestState();
     LOG_INFO("initVmcsGuestState success");
-    initVmcsControlFields();
-    LOG_INFO("initVmcsControlFields success");
 
     //
     // left here just for test
     //
-    vmwrite(GUEST_RSP, (uint64_t)g_virtual_guest_memory_address); // setup guest sp
-    vmwrite(GUEST_RIP, (uint64_t)g_virtual_guest_memory_address); // setup guest ip
+    vmwrite(GUEST_RSP, (uint64_t)guest_state->VmmStack);          // setup guest sp
+    // vmwrite(GUEST_RIP, (uint64_t)g_virtual_guest_memory_address); // setup guest ip
+    vmwrite(GUEST_RIP, VmentryHandler); // setup guest ip
 
-    vmwrite(HOST_RSP, ((uint64_t)guest_state->VmmStack + VMM_STACK_SIZE - 1));
+    vmwrite(HOST_RSP, ((uint64_t)guest_state->VmmStack + VMM_STACK_SIZE / 2));
     vmwrite(HOST_RIP, (uint64_t)VmexitHandler);
 }
 
@@ -396,7 +456,7 @@ void _launchVm(void *stack)
     g_guest_state[cpu].MsrBitmapPhysical = __pa(g_guest_state[cpu].MsrBitmap);
 
     // clearing the VMCS state and loading it as the current VMCS
-    if (!clearVMCSState(&g_guest_state[cpu]))
+    if (clearVMCSState(&g_guest_state[cpu]))
     {
         LOG_ERR("Failed to clear VMCS state");
         return;
@@ -404,7 +464,7 @@ void _launchVm(void *stack)
     LOG_INFO("VMCS state cleared\n");
 
     // load VMCS
-    if (!loadVMCS(&g_guest_state[cpu]))
+    if (loadVMCS(&g_guest_state[cpu]))
     {
         LOG_ERR("Failed to load VMCS");
         return;
@@ -472,8 +532,8 @@ void VmResumeInstruction(void)
 
     // if VMRESUME succeeds will never be here !
 
-    u32 ErrorCode =
-        vmread(VM_INSTRUCTION_ERROR);
+    u64 ErrorCode =
+        vmreadz(VM_INSTRUCTION_ERROR);
     vmxoff();
     LOG_INFO("[*] VMRESUME Error : 0x%llx\n", ErrorCode);
 
@@ -481,18 +541,23 @@ void VmResumeInstruction(void)
     // It's such a bad error because we don't where to go!
     // prefer to break
     //
-    // DbgBreakPoint();
-    __asm__ __volatile__("int3");
+    // BREAKPOINT();
 }
 
 void MainVmexitHandler(PGUEST_REGS GuestRegs)
 {
-    u32 ExitReason = vmread(VM_EXIT_REASON);
+    u64 ExitReason = vmreadz(VM_EXIT_REASON);
 
-    u32 ExitQualification = vmread(EXIT_QUALIFICATION);
+    u64 ExitQualification = vmreadz(EXIT_QUALIFICATION);
+    u64 guest_rsp = vmreadz(GUEST_RSP);
+    u64 guest_rip = vmreadz(GUEST_RIP);
 
-    LOG_INFO("VM_EXIT_REASION 0x%x\n", ExitReason & 0xffff);
-    LOG_INFO("XIT_QUALIFICATION 0x%x\n", ExitQualification);
+    LOG_INFO("VM_EXIT_REASION 0x%llx\n", ExitReason & 0xffff);
+    LOG_INFO("XIT_QUALIFICATION 0x%llx\n", ExitQualification);
+    LOG_INFO("GUEST_RIP 0x%llx\n", guest_rip);
+    LOG_INFO("GUEST_RSP 0x%llx\n", guest_rsp);
+
+    // BREAKPOINT();
 
     switch (ExitReason)
     {
@@ -580,4 +645,59 @@ void MainVmexitHandler(PGUEST_REGS GuestRegs)
         break;
     }
     }
+}
+
+bool isSupportedVMX(void)
+{
+    if (cpu_has_vmx() == false)
+    {
+        LOG_ERR("VMX is not supported");
+        return false;
+    }
+
+    IA32_FEATURE_CONTROL_MSR_BITs msr = {0};
+
+    msr.All = get_msr(MSR_IA32_FEAT_CTL);
+
+    if (msr.Fields.EnableVmxon != 0x1)
+    {
+        LOG_ERR("VMX is not enabled by BIOS");
+        return false;
+    }
+
+    uint64_t cr4 = get_cr4();
+    if ((cr4 & X86_CR4_VMXE))
+    {
+        LOG_ERR("VMX has been enabled by other hypervisor");
+        return false;
+    }
+
+    uint64_t cr0 = get_cr0();
+    if (((cr0 & X86_CR0_PE) == 0) || ((cr0 & X86_CR0_PG) == 0 || (cr0 & X86_CR0_NE) == 0))
+    {
+        // 24.8 RESTRICTIONS ON VMX OPERATION
+        LOG_ERR("CR0 is not supported! cr0 = 0x%llx", cr0);
+        if (cr0 & X86_CR0_PE == 0)
+        {
+            LOG_ERR("X86_CR0_PE is not set");
+        }
+        if (cr0 & X86_CR0_PG == 0)
+        {
+            LOG_ERR("X86_CR0_PG is not set");
+        }
+        if (cr0 & X86_CR0_NE == 0)
+        {
+            LOG_ERR("X86_CR0_NE is not set");
+        }
+        return false;
+    }
+
+    RFLAGs rflags = get_rflags();
+    if (rflags.Fields.VM)
+    {
+        LOG_ERR("VMX is not supported in virtual 8086 mode");
+        return false;
+    }
+
+    return true;
 }
