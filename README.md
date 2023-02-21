@@ -4,6 +4,7 @@
 * [Intel® 64 and IA-32 Architectures Software Developer’s Manual Combined Volumes: 1, 2A, 2B, 2C, 2D, 3A, 3B, 3C, 3D, and 4](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
 * [CPU Registers x86_64](https://wiki.osdev.org/CPU_Registers_x86-64)
 * [VMCS-Auditor](https://github.com/SinaKarvandi/VMCS-Auditor)
+* [Intel VT学习笔记](https://blog.csdn.net/qq_41988448/category_11624333.html)
 
 ## Linux内核调试
 ```
@@ -127,12 +128,22 @@ VOLUME3 APPENDIX C
 VMX BASIC EXIT REASONS
 
 ### EXIT_QUALIFICATION
-VOLUME3 Table 28-1. Exit Qualification for Debug Exceptions
+VOLUME3 
+
+Table 28-1. Exit Qualification for Debug Exceptions
+Table 28-2. Exit Qualification for Task Switches
+Table 28-3. Exit Qualification for Control-Register Accesses
+Table 28-4. Exit Qualification for MOV DR 
+Table 28-5. Exit Qualification for I/O Instructions 
+Table 28-6. Exit Qualification for APIC-Access VM Exits from Linear Accesses and Guest-Physical Accesses
+Table 28-7. Exit Qualification for EPT Violations
+Table 32-9. Exit Qualification for SMIs That Arrive Immediately After the Retirement of an I/O Instruction
 
 ## 汇编指令
 
 ### SETBE/SETNA
 
+```
 SETBE/SETNA - Set if Below or Equal / Set if Not Above (386+)
 
         Usage:  SETBE   dest
@@ -148,3 +159,49 @@ SETBE/SETNA - Set if Below or Equal / Set if Not Above (386+)
 
         reg8              -     -     4     3             3
         mem8              -     -     5     4             3
+```
+
+## VMX CAPABILITY REPORTING FACILITY
+
+VOLUME3 APPENDIXA VMX CAPABILITY REPORTING FACILITY
+
+通过MSR可以设置处理器支持哪些能力。在设置VMCS时，为了使hypervisor能够在拥有不同微架构的处理器上工作，就需要明细处理器支持哪些能力以避免未定义的行为和VM-ENTRY时的错误。
+
+这些处理器功能被分为若干个MSR：pin-based VM-execution controls, primary processor-based VM-execution controls, VM-Entry Controls, VM-Exit Controls, secondary processor-based VM-execution controls
+
+|VMCS field|MSR|说明|
+|----|----|----|
+|VM_ENTRY_CONTROLS|MSR_IA32_VMX_ENTRY_CTLS|VM-Entry Controls|
+|VM_EXIT_CONTROLS|MSR_IA32_VMX_EXIT_CTLS|VM-Exit Controls|
+|CPU_BASED_VM_EXEC_CONTROL|MSR_IA32_VMX_PROCBASED_CTLS|primary processor-based VM-execution controls|
+|SECONDARY_VM_EXEC_CONTROL|MSR_IA32_VMX_PROCBASED_CTLS2|secondary processor-based VM-execution controls|
+|PIN_BASED_VM_EXEC_CONTROL|MSR_IA32_VMX_PINBASED_CTLS|pin-based VM-execution controls|
+
+在VMX中，有一些控制位是保留的，必须被设置为0或者1，这些控制位称之为默认设置（default setting）。每个控制位可以被分为三类：
+1. Always-flexible
+2. default0
+3. default1
+
+
+![](./images/RESERVED_CONTROLS_AND_DEFAULT_SETTINGS.png)
+
+上表的几个MSR寄存器的bits31:0都是允许被置为0的。如果在对应的MSR中，第X位是1的话，那么一般VMCS控制域也应当在相应的位设置为1；如果MSR中是0的话，VMCS控制域允许被设置为0.
+
+高32bit是允许被设置成1的，如果MSR的第Xbit被设置成1，那么相应的位也可以被设置成1；如果MSR中是0的话，那么必须设置成0.
+
+这两条规则并不总是试用，具体如何设置应参见手册。
+
+## MSR-Bitmap
+
+volume3 25.6.9 MSR-Bitmap Address
+
+It is not necessary to initialize fields that the logical processor will not use. (For example, it is not necessary to 
+initialize the MSR-bitmap address if the “use MSR bitmaps” VM-execution control is 0.)
+
+Table 25-6. Definitions of Primary Processor-Based VM-Execution Controls
+
+bit28 is `use MSR-Bitmap`, 0 means `do not use MSR-Bitmap`
+
+## VM-Exit handle
+
+VOLUME3 26.1 INSTRUCTIONS THAT CAUSE VM EXITS

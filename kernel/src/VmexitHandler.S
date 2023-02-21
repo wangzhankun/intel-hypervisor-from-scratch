@@ -5,6 +5,11 @@
 
 .global MainVmexitHandler;
 .global VmResumeInstruction;
+.global Vmexit_temporary;
+
+.data
+status:
+        .zero   8
 
 .text
 .global VmexitHandler
@@ -28,12 +33,14 @@ VmexitHandler:
         push %rax
 
         movq %rsp, %rdi // 参考函数约定，第一个使用的参数寄存器是 %rdi
-        // sub $0x28, %rsp
         
+        sub $0x28, %rsp
         // System V AMD64调用约定要求栈必须按16字节对齐，也就是说，在调用call指令之前(the end of the input argument area)，%rsp指针必须是16的倍数（对应16进制是最后1位是0）
         call MainVmexitHandler
+        add $0x28, %rsp
 
-        // add 0x28, %rsp
+        // 整型返回值存在%rax里面，移动到status里
+        movq %rax, status(%rip)
 
         pop %rax
         pop %rcx
@@ -52,5 +59,11 @@ VmexitHandler:
         pop %r14
         pop %r15
 
-        sub $0x0100, %rsp
+        
+        // 如果 status == 0，继续执行
+        // 如果 status != 0，临时退出虚拟机
+        movq status(%rip), %rax
+        testq   %rax, %rax
+        jne Vmexit_temporary
+
         jmp VmResumeInstruction

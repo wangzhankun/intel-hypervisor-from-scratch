@@ -90,7 +90,7 @@ static void misc_exit(void)
 {
     destoryEPT(g_eptp);
     g_eptp = NULL;
-
+    exitVMX();
 
     misc_deregister(&hypervisor_cdev);
 

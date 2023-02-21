@@ -31,6 +31,7 @@ BOOL initVMX(void);
 void exitVMX(void);
 
 void launchVm(int cpu, PEPTP);
+void exitVm(int cpu, PEPTP eptp);
 
 bool isSupportedVMX(void);
 

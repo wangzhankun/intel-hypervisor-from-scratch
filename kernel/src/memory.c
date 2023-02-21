@@ -37,7 +37,7 @@ void freeVMXRegion(VIRTUAL_MACHINE_STATE *guest_state)
 {
     if (guest_state->VmxonRegion != 0)
     {
-        free_pages(guest_state->VmxonRegion, 0);
+        free_pages(__va(guest_state->VmxonRegion), 0);
         guest_state->VmxonRegion = 0;
     }
 }
@@ -46,7 +46,7 @@ void freeVMCSRegion(VIRTUAL_MACHINE_STATE *guest_state)
 {
     if (guest_state->VmcsRegion != 0)
     {
-        free_pages(guest_state->VmcsRegion, 0);
+        free_pages(__va(guest_state->VmcsRegion), 0);
         guest_state->VmcsRegion = 0;
     }
 }

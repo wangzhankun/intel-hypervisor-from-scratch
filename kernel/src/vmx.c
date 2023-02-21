@@ -9,7 +9,7 @@
 #include "../include/reg.h"
 #include <asm/msr.h>
 
-static VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
+VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
 static cpumask_var_t cpus_hardware_enabled;
 
 uint64_t g_stack_pointer_for_returning;
@@ -64,7 +64,7 @@ static void disableVMX(VIRTUAL_MACHINE_STATE *guest_state)
     }
     else
     {
-        vmclear(guest_state->VmcsRegion);
+        // vmclear(guest_state->VmcsRegion);
         vmxoff();
         cr4 &= ~X86_CR4_VMXE;
         set_cr4(cr4);
@@ -72,7 +72,7 @@ static void disableVMX(VIRTUAL_MACHINE_STATE *guest_state)
     }
 }
 
-static void terminateVMX(void *unused)
+static void _exitVMX(void *unused)
 {
     int cpu = raw_smp_processor_id();
 
@@ -93,7 +93,7 @@ static void terminateVMX(void *unused)
     freeVMXRegion(guest_state);
 }
 
-static void initializeVMX(void *unused)
+static void _initVMX(void *unused)
 {
     int cpu = raw_smp_processor_id();
 
@@ -135,7 +135,7 @@ static void initializeVMX(void *unused)
 
 void exitVMX(void)
 {
-    on_each_cpu((smp_call_func_t)terminateVMX, NULL, 1);
+    on_each_cpu((smp_call_func_t)_exitVMX, NULL, 1);
     int cpu_num = cpumask_weight(cpus_hardware_enabled);
     if (cpu_num != 0)
     {
@@ -158,7 +158,7 @@ BOOL initVMX(void)
         return false;
     }
 
-    on_each_cpu((smp_call_func_t)initializeVMX, NULL, 1);
+    on_each_cpu((smp_call_func_t)_initVMX, NULL, 1);
     int cpu_num = cpumask_weight(cpus_hardware_enabled);
     LOG_INFO("VMX is enabled on %d CPUs", cpu_num);
     return cpu_num == num_online_cpus();
@@ -268,16 +268,21 @@ void initVmcsControlFields(void)
 
     vmwrite(PIN_BASED_VM_EXEC_CONTROL, get_msr(MSR_IA32_VMX_TRUE_PINBASED_CTLS));
 
-    if (!vmwrite(SECONDARY_VM_EXEC_CONTROL, sec_exec_ctl))
-        vmwrite(CPU_BASED_VM_EXEC_CONTROL,
-                get_msr(MSR_IA32_VMX_TRUE_PROCBASED_CTLS) | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS);
-    else
-    {
-        vmwrite(CPU_BASED_VM_EXEC_CONTROL, get_msr(MSR_IA32_VMX_TRUE_PROCBASED_CTLS));
-        // GUEST_ASSERT(!sec_exec_ctl);
-        if (!sec_exec_ctl)
-            BREAKPOINT();
-    }
+    vmwrite(CPU_BASED_VM_EXEC_CONTROL, AdjustControls(CPU_BASED_USE_MSR_BITMAPS | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS, MSR_IA32_VMX_PROCBASED_CTLS));
+    vmwrite(SECONDARY_VM_EXEC_CONTROL, AdjustControls(SECONDARY_EXEC_ENABLE_RDTSCP | SECONDARY_EXEC_ENABLE_INVPCID | SECONDARY_ENABLE_XSAV_RESTORE, MSR_IA32_VMX_PROCBASED_CTLS2));
+
+    // if (!vmwrite(SECONDARY_VM_EXEC_CONTROL, sec_exec_ctl))
+    // {
+    //     vmwrite(CPU_BASED_VM_EXEC_CONTROL,
+    //             get_msr(MSR_IA32_VMX_TRUE_PROCBASED_CTLS) | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS);
+    // }
+    // else
+    // {
+    //     vmwrite(CPU_BASED_VM_EXEC_CONTROL, get_msr(MSR_IA32_VMX_TRUE_PROCBASED_CTLS));
+    //     // GUEST_ASSERT(!sec_exec_ctl);
+    //     if (!sec_exec_ctl)
+    //         BREAKPOINT();
+    // }
 
     vmwrite(EXCEPTION_BITMAP, 0);
     vmwrite(PAGE_FAULT_ERROR_CODE_MASK, 0);
@@ -419,7 +424,7 @@ void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPTP eptp)
     //
     // left here just for test
     //
-    vmwrite(GUEST_RSP, (uint64_t)guest_state->VmmStack);          // setup guest sp
+    vmwrite(GUEST_RSP, (uint64_t)guest_state->VmmStack); // setup guest sp
     // vmwrite(GUEST_RIP, (uint64_t)g_virtual_guest_memory_address); // setup guest ip
     vmwrite(GUEST_RIP, VmentryHandler); // setup guest ip
 
@@ -526,124 +531,19 @@ void launchVm(int cpu, PEPTP eptp)
     kfree(stack);
 }
 
-void VmResumeInstruction(void)
+void exitVm(int cpu, PEPTP eptp)
 {
-    vmresume();
-
-    // if VMRESUME succeeds will never be here !
-
-    u64 ErrorCode =
-        vmreadz(VM_INSTRUCTION_ERROR);
     vmxoff();
-    LOG_INFO("[*] VMRESUME Error : 0x%llx\n", ErrorCode);
-
-    //
-    // It's such a bad error because we don't where to go!
-    // prefer to break
-    //
-    // BREAKPOINT();
-}
-
-void MainVmexitHandler(PGUEST_REGS GuestRegs)
-{
-    u64 ExitReason = vmreadz(VM_EXIT_REASON);
-
-    u64 ExitQualification = vmreadz(EXIT_QUALIFICATION);
-    u64 guest_rsp = vmreadz(GUEST_RSP);
-    u64 guest_rip = vmreadz(GUEST_RIP);
-
-    LOG_INFO("VM_EXIT_REASION 0x%llx\n", ExitReason & 0xffff);
-    LOG_INFO("XIT_QUALIFICATION 0x%llx\n", ExitQualification);
-    LOG_INFO("GUEST_RIP 0x%llx\n", guest_rip);
-    LOG_INFO("GUEST_RSP 0x%llx\n", guest_rsp);
-
-    // BREAKPOINT();
-
-    switch (ExitReason)
+    clearVMCSState(&g_guest_state[cpu]);
+    if (g_guest_state[cpu].MsrBitmap)
     {
-        //
-        // 25.1.2  Instructions That Cause VM Exits Unconditionally
-        // The following instructions cause VM exits when they are executed in VMX non-root operation: CPUID, GETSEC,
-        // INVD, and XSETBV. This is also true of instructions introduced with VMX, which include: INVEPT, INVVPID,
-        // VMCALL, VMCLEAR, VMLAUNCH, VMPTRLD, VMPTRST, VMRESUME, VMXOFF, and VMXON.
-        //
-
-    case EXIT_REASON_VMCLEAR:
-    case EXIT_REASON_VMPTRLD:
-    case EXIT_REASON_VMPTRST:
-    case EXIT_REASON_VMREAD:
-    case EXIT_REASON_VMRESUME:
-    case EXIT_REASON_VMWRITE:
-    case EXIT_REASON_VMOFF:
-    case EXIT_REASON_VMON:
-    case EXIT_REASON_VMLAUNCH:
-    {
-        break;
+        free_page(g_guest_state[cpu].MsrBitmap);
+        g_guest_state[cpu].MsrBitmap = NULL;
     }
-    case EXIT_REASON_HLT:
+    if (g_guest_state[cpu].VmmStack)
     {
-        LOG_INFO("[*] Execution of HLT detected... \n");
-
-        //
-        // that's enough for now ;)
-        //
-        // AsmVmxoffAndRestoreState();
-        __asm__ __volatile__("vmxoff\n\t");
-        // restore rsp, rbp
-        __asm__ __volatile__("movq %0, %%rsp"
-                             :
-                             : "m"(g_stack_pointer_for_returning));
-        __asm__ __volatile__("movq %0, %%rbp"
-                             :
-                             : "m"(g_base_pointer_for_returning));
-
-        break;
-    }
-    case EXIT_REASON_EXCEPTION_NMI:
-    {
-        break;
-    }
-
-    case EXIT_REASON_CPUID:
-    {
-        break;
-    }
-
-    case EXIT_REASON_INVD:
-    {
-        break;
-    }
-
-    case EXIT_REASON_VMCALL:
-    {
-        break;
-    }
-
-    case EXIT_REASON_CR_ACCESS:
-    {
-        break;
-    }
-
-    case EXIT_REASON_MSR_READ:
-    {
-        break;
-    }
-
-    case EXIT_REASON_MSR_WRITE:
-    {
-        break;
-    }
-
-    case EXIT_REASON_EPT_VIOLATION:
-    {
-        break;
-    }
-
-    default:
-    {
-        // BREAKPOINT();
-        break;
-    }
+        kfree(g_guest_state[cpu].VmmStack);
+        g_guest_state[cpu].VmmStack = NULL;
     }
 }
 
