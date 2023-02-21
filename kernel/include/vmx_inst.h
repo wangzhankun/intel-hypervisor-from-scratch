@@ -147,10 +147,6 @@
 #define EXIT_REASON_XRSTORS 64
 #define LAST_EXIT_REASON 64
 
-asmlinkage void vmread_error(unsigned long field, bool fault);
-__attribute__((regparm(0))) void vmread_error_trampoline(unsigned long field,
-                                                         bool fault);
-void kvm_spurious_fault(void);
 
 static __always_inline int parseRflagForVmxOperation(void)
 {
@@ -259,23 +255,6 @@ static inline void vmresume(void)
     __asm__ __volatile__("vmresume");
 }
 
-static inline void vmcall(void)
-{
-    /* Currently, L1 destroys our GPRs during vmexits.  */
-    __asm__ __volatile__("push %%rbp; vmcall; pop %%rbp"
-                         :
-                         :
-                         : "rax", "rbx", "rcx", "rdx",
-                           "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
-                           "r13", "r14", "r15");
-}
-
-#define vmx_insn_failed(fmt...)   \
-    do                            \
-    {                             \
-        WARN_ONCE(1, fmt);        \
-        pr_warn_ratelimited(fmt); \
-    } while (0)
 
 static __always_inline unsigned long vmread(uint64_t encoding, uint64_t *value)
 {
@@ -313,15 +292,5 @@ static inline int vmwrite(uint64_t encoding, uint64_t value)
     return parseRflagForVmxOperation();
 }
 
-// #define __vmx_vmon(phys) vmxon(phys)
-// #define __vmx_vmoff() vmxoff()
-// #define __vmx_vmclear(vmcs_pa) vmclear(vmcs_pa)
-// #define __vmx_vmptrld(vmcs_pa) vmptrld(vmcs_pa)
-// #define __vmx_vmptrst(value) vmptrst(value)
-// #define __vmx_vmlaunch() vmlaunch()
-// #define __vmx_vmresume() vmresume()
-// #define __vmx_vmcall() vmcall()
-// #define __vmx_vmread(encoding, value) vmread(encoding, value)
-// #define __vmx_vmwrite(encoding, value) vmwrite(encoding, value)
 
 #endif // __VMX_INST_H__
