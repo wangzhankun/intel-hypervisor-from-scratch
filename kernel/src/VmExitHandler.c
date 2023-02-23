@@ -12,10 +12,15 @@
 #define HYPERV_CPUID_MIN 0x40000005
 #define HYPERV_CPUID_MAX 0x4000ffff
 
-uint64_t g_guest_rsp = 0, g_guest_rip = 0;
+// uint64_t g_guest_rsp = 0, g_guest_rip = 0;
 extern uint64_t g_stack_pointer_for_returning;
 extern uint64_t g_base_pointer_for_returning;
 extern VIRTUAL_MACHINE_STATE *g_guest_state;
+
+extern void test_vmcall0(void);
+extern void test_vmcall1(int param1);
+extern void test_vmcall2(int param1, int param2);
+extern void test_vmcall3(int param1, int param2, int param3);
 
 /**
  * @brief handle CPUID instruction
@@ -279,15 +284,44 @@ int setMsrBitmap(u64 msr, bool read_detection, bool write_detection)
 
 void Vmexit_temporary(void)
 {
-    
+}
+
+void handleVmcall(PGUEST_REGS GuestRegs)
+{
+    // 由于在进行寄存器传参时，第一个值是存储在了 %rdi 中，而第一个值是 vmcall 的编号
+    // 所以这里直接使用 %rdi
+    // 后续在调用的时候，参数需要从 %rsi 开始
+    u64 vmcall_code = GuestRegs->rdi;
+    switch (vmcall_code)
+    {
+    case 0:
+    {
+        test_vmcall0();
+        break;
+    }
+    case 1:
+    {
+        test_vmcall1(GuestRegs->rsi);
+        break;
+    }
+    case 2:
+    {
+        test_vmcall2(GuestRegs->rsi, GuestRegs->rdx);
+        break;
+    }
+    case 3:
+    {
+        test_vmcall3(GuestRegs->rsi, GuestRegs->rdx, GuestRegs->rcx);
+        break;
+    }
+    default:
+        BREAKPOINT();
+        break;
+    }
 }
 
 void VmResumeInstruction(void)
 {
-    u64 guest_rip = vmreadz(GUEST_RIP);
-    uint64_t exit_inst_length = vmreadz(VM_EXIT_INSTRUCTION_LEN);
-    guest_rip += exit_inst_length;
-    vmwrite(GUEST_RIP, guest_rip);
 
     vmresume();
 
@@ -305,13 +339,31 @@ void VmResumeInstruction(void)
     // BREAKPOINT();
 }
 
+#define vmreadError(ret)                      \
+    {                                         \
+        LOG_INFO("vmread error %llx\n", ret); \
+    }
+
 int MainVmexitHandler(PGUEST_REGS GuestRegs)
 {
-    u64 ExitReason = vmreadz(VM_EXIT_REASON);
+    u64 ret = 0;
+    u64 ExitReason = 0;
+    ret = vmread(VM_EXIT_REASON, &ExitReason);
+    vmreadError(ret);
 
-    u64 ExitQualification = vmreadz(EXIT_QUALIFICATION);
-    u64 guest_rsp = vmreadz(GUEST_RSP);
-    u64 guest_rip = vmreadz(GUEST_RIP);
+    u64 ExitQualification = 0;
+    ret = vmread(EXIT_QUALIFICATION, &ExitQualification);
+    vmreadError(ret);
+
+
+    u64 guest_rsp = 0;
+    ret = vmread(GUEST_RSP, &guest_rsp);
+    vmreadError(ret);
+
+    u64 guest_rip = 0;
+    ret = vmread(GUEST_RIP, &guest_rip);
+    vmreadError(ret);
+
 
     LOG_INFO("VM_EXIT_REASION 0x%llx\n", ExitReason & 0xffff);
     LOG_INFO("XIT_QUALIFICATION 0x%llx\n", ExitQualification);
@@ -381,6 +433,7 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
 
     case EXIT_REASON_VMCALL:
     {
+        handleVmcall(GuestRegs);
         break;
     }
 
@@ -418,12 +471,20 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     }
     }
 
+    // 跳转到下一条指令
+    uint64_t exit_inst_length = 0;
+    ret = vmread(VM_EXIT_INSTRUCTION_LEN, &exit_inst_length);
+    // We have to save GUEST_RIP & GUEST_RSP somewhere to restore them directly
+    guest_rip = guest_rip + exit_inst_length;
+    ret = vmwrite(GUEST_RIP, guest_rip);
+    if(ret != 0)
+    {
+        LOG_INFO("vmwrite error %llx\n", ret);
+    }
+
     if (status != 0)
     {
-        uint64_t exit_inst_length = vmreadz(VM_EXIT_INSTRUCTION_LEN);
-        // We have to save GUEST_RIP & GUEST_RSP somewhere to restore them directly
-        g_guest_rip = guest_rip + exit_inst_length;
-        g_guest_rsp = guest_rsp;
     }
+
     return status;
 }

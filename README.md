@@ -141,6 +141,28 @@ Table 32-9. Exit Qualification for SMIs That Arrive Immediately After the Retire
 
 ## 汇编指令
 
+
+system amd64是一种基于x86_64架构的系统，它有不同的函数调用约定（calling convention），用来规定函数参数如何传递、返回值如何保存、寄存器如何使用等。
+
+其中，最常见的两种函数调用约定是：
+* System V AMD64：这是Linux系统上广泛使用的一种调用约定，它规定前六个整数或指针参数分别放在RDI, RSI, RDX, RCX, R8, R9寄存器中，前八个浮点参数分别放在XMM0~XMM7寄存器中，多余的参数按顺序压入栈中。返回值如果是整数或指针，则放在RAX寄存器中；如果是浮点，则放在XMM0寄存器中；如果是结构体，则放在RAX和RDX寄存器中。
+* Microsoft x64：这是Windows系统上统一使用的一种调用约定，它规定前四个整数或指针参数分别放在RCX, RDX, R8, R9寄存器中，前四个浮点参数分别放在XMM0~XMM3寄存器中，多余的参数按顺序压入栈中。返回值和System V AMD64相同。
+
+
+* call：这是一个过程调用指令，它的作用是将返回地址（也就是call指令后面的指令地址）压入栈中，然后跳转到目标过程的起始地址执行。
+* ret：这是一个过程返回指令，它的作用是将栈顶的返回地址弹出到EIP寄存器中，然后跳转到EIP指示的指令地址继续执行。
+* leave：这是一个释放栈帧指令，它的作用是将EBP寄存器的值赋给ESP寄存器，然后将栈顶的值弹出到EBP寄存器中。这样就恢复了调用过程之前的栈帧状态。
+* jmp：这是一个无条件跳转指令，它的作用是直接跳转到目标地址执行，不管之前有没有调用过程或者返回地址。
+
+一般来说，在汇编语言中编写子程序时，会使用call和ret配合使用来实现过程调用和返回；而在子程序内部会使用push, pop, mov等指令来建立和释放局部变量所占用的栈空间；也可以使用leave来简化释放栈空间的操作；而jmp则主要用于实现循环、分支等控制流结构。
+
+* [内联汇编](https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html)
+* [x86_64汇编之一：AT&T汇编语法](https://blog.csdn.net/qq_29328443/article/details/107242121)
+* [x86_64汇编之四：函数调用、调用约定](https://blog.csdn.net/qq_29328443/article/details/107232025)
+* [x86_64汇编之五：System V AMD64调用约定下的函数调用](https://blog.csdn.net/qq_29328443/article/details/107235138)
+* [指令讲解网站，自己修改URL的后缀为对应指令即可](https://www.felixcloutier.com/x86/pushf:pushfd:pushfq)
+
+
 ### SETBE/SETNA
 
 ```
@@ -205,3 +227,14 @@ bit28 is `use MSR-Bitmap`, 0 means `do not use MSR-Bitmap`
 ## VM-Exit handle
 
 VOLUME3 26.1 INSTRUCTIONS THAT CAUSE VM EXITS
+
+
+## gdb的使用
+
+gdb 显示内存数据的格式是 x /nfu123，其中：
+
+x 是 examine 的缩写，意思是检查。
+n 表示要显示的内存单元的个数。
+f 表示显示方式，可以是 x（十六进制）、d（十进制）、u（无符号整型）、o（八进制）、t（二进制）、a（十六进制地址）、i（指令地址）、c（字符）或 f（浮点数）。
+u 表示单位，可以是 b（字节）、h（半字）、w（字）或 g（双字）。
+例如，x /9db 0x00001fa4 表示从内存地址 0x00001fa4 开始读取 9 个字节，并以十进制格式显示
