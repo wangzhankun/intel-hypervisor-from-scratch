@@ -339,6 +339,35 @@ void VmResumeInstruction(void)
     // BREAKPOINT();
 }
 
+int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification)
+{
+    switch(ExitQualification)
+    {
+        case 0:
+        {
+            LOG_INFO("EPT Violation: Read access\n");
+            break;
+        }
+        case 1:
+        {
+            LOG_INFO("EPT Violation: Write access\n");
+            break;
+        }
+        case 2:
+        {
+            LOG_INFO("EPT Violation: instruction fetch\n");
+            break;
+        }
+        default:
+        {
+            LOG_INFO("EPT Violation: Unknown access\n");
+            break;
+        }
+    }
+
+    return 0;
+}
+
 #define vmreadError(ret)                      \
     {                                         \
         LOG_INFO("vmread error %llx\n", ret); \
@@ -457,12 +486,15 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
 
     case EXIT_REASON_EPT_VIOLATION:
     {
+        status = handleEPTViolation(GuestRegs, ExitQualification);
+
         break;
     }
     case EXIT_REASON_IO_INSTRUCTION:
     {
         break;
     }
+
 
     default:
     {

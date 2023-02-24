@@ -17,8 +17,8 @@
 
 typedef struct _VIRTUAL_MACHINE_STATE
 {
-    phys_addr_t VmxonRegion; // VMXON region
-    phys_addr_t VmcsRegion;  // VMCS region
+    phys_addr_t VmxonRegion; // VMXON region, physical address
+    phys_addr_t VmcsRegion;  // VMCS region, physical address
 
     uint64_t Eptp;              // extended page table pointer
     uint64_t VmmStack;          // stack for vmm in vm-exit state, virtual address
@@ -30,9 +30,8 @@ typedef struct _VIRTUAL_MACHINE_STATE
 BOOL initVMX(void);
 void exitVMX(void);
 
-void launchVm(int cpu, PEPTP);
-void exitVm(int cpu, PEPTP eptp);
+void launchVm(int cpu, PEPT_STATE ept_state);
+void exitVm(int cpu, PEPT_STATE ept_state);
 
-bool isSupportedVMX(void);
 
 #endif /* __VMX_H__ */

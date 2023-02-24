@@ -13,8 +13,8 @@ MODULE_LICENSE("GPL");
 #include "../include/ioctl.h"
 #include "../include/eptp.h"
 #include "../include/vmx.h"
+#include "../include/cpu_features.h"
 
-PEPTP g_eptp = NULL;
 
 struct file_operations hyper_fops = {
     .owner = THIS_MODULE,
@@ -57,29 +57,8 @@ static int __init misc_init(void)
         return -1;
     }
 
-    g_eptp = initEPT();
-    if (g_eptp == NULL)
-    {
-        LOG_ERR("init ept operation failed");
-        return -1;
-    }
 
-    if (initVMX())
-    {
-        LOG_INFO("init vmx operation success");
-    }
-    else
-    {
-        LOG_ERR("init vmx operation failed");
-        return -1;
-    }
 
-    for (size_t i = 0; i < (100 * PAGE_SIZE) - 1; i++)
-    {
-        // void *TempAsm = "\xF4";
-        char TempAsm = 0xf4;
-        memcpy(g_virtual_guest_memory_address + i, &TempAsm, 1);
-    }
 
     LOG_INFO(MODULENAME " register success\n");
 
@@ -88,9 +67,7 @@ static int __init misc_init(void)
 
 static void misc_exit(void)
 {
-    destoryEPT(g_eptp);
-    g_eptp = NULL;
-    exitVMX();
+
 
     misc_deregister(&hypervisor_cdev);
 

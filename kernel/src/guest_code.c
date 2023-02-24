@@ -60,11 +60,11 @@ void test_call(int a)
 
 void guestEntry(void)
 {
-    // unsigned eax, ebx, ecx, edx;
-    // eax = 0;
-    // __cpuid(&eax, &ebx, &ecx, &edx);
-    // eax = 0;
-    // __cpuid(&eax, &ebx, &ecx, &edx);
+    unsigned eax, ebx, ecx, edx;
+    eax = 0;
+    __cpuid(&eax, &ebx, &ecx, &edx);
+    eax = 0;
+    __cpuid(&eax, &ebx, &ecx, &edx);
     guest_vmcall0();
     guest_vmcall1();
     guest_vmcall2();

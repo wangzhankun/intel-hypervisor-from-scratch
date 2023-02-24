@@ -183,6 +183,10 @@ SETBE/SETNA - Set if Below or Equal / Set if Not Above (386+)
         mem8              -     -     5     4             3
 ```
 
+### CPUID
+
+VOL2A See “CPUID—CPU Identification” in Chapter 3, “Instruction Set Reference, A-L,”
+
 ## VMX CAPABILITY REPORTING FACILITY
 
 VOLUME3 APPENDIXA VMX CAPABILITY REPORTING FACILITY
@@ -238,3 +242,52 @@ n 表示要显示的内存单元的个数。
 f 表示显示方式，可以是 x（十六进制）、d（十进制）、u（无符号整型）、o（八进制）、t（二进制）、a（十六进制地址）、i（指令地址）、c（字符）或 f（浮点数）。
 u 表示单位，可以是 b（字节）、h（半字）、w（字）或 g（双字）。
 例如，x /9db 0x00001fa4 表示从内存地址 0x00001fa4 开始读取 9 个字节，并以十进制格式显示
+
+
+## MTRR
+
+A frame buffer is a large piece of computer memory that stores pixel data for a raster display.
+
+
+MTRR, or Memory-Type Range Registers are a group of x86 Model Specific Registers providing a way to control access and cacheability of physical memory regions. These were introduced in the Intel Pentium Pro (P6) processor, intended to extend and enhance the memory type information provided by page tables (i.e. the write-through and cache disable bits).
+
+The set of registers is provided in two groups: 11 registers for 88 fixed ranges and a number of base-mask pairs for custom range configuration. The exact number of the latter can be known by reading the capabilities register.
+
+Memory type range registers (MTRRs) are a set of processor supplementary capability control registers that provide system software with control of how accesses to memory ranges by the CPU are cached. It uses a set of programmable model-specific registers (MSRs) which are special registers provided by most modern CPUs. Possible access modes to memory ranges can be uncached, write-through, write-combining, write-protect, and write-back. In write-back mode, writes are written to the CPU's cache and the cache is marked dirty, so that its contents are written to memory later.
+
+![](./images/MemoryType.png)
+
+Keep in mind that caching policy for each region of RAM is defined by MTRRs for PHYSICAL regions and PAGE ATTRIBUTE TABLE (PAT) for virtual areas so that each page can use its own caching policy by configuring IA32_PAT MSR. This means that sometimes the caching policy specified in MTRR registers is ignored, and instead, a page-level cache policy is used.
+
+
+* VOL3A chapter12
+* VOL3A 12.11 MEMORY TYPE RANGE REGISTERS (MTRRS)
+* [Page Attribute Table, PAT](https://en.wikipedia.org/wiki/Page_attribute_table)
+* [Wikipedia MTRR](https://en.wikipedia.org/wiki/Memory_type_range_register)
+* [OSDEV MTRR](https://wiki.osdev.org/MTRR)
+* [MTRR是什么](https://blog.csdn.net/jiangwei0512/article/details/100798102)
+
+
+## LINUX 内存
+
+### 内存分配
+
+Linux内核提供了多种API来分配连续的物理内存。一些常用的API有：
+
+* kmalloc或kmem_cache_alloc系列，用于分配小块的内存。保证地址4KB对齐
+* vmalloc或其衍生函数，用于分配大的虚拟连续的内存区域。
+* alloc_pages或__get_free_pages，用于直接从页分配器请求页。保证地址4KB对齐
+* cma_alloc或zs_malloc，用于使用更专门的分配器。
+* dma_alloc_coherent或dma_alloc_attrs，用于分配DMA可访问的连续内存，它们都保证返回的指针是4KB对齐的。
+
+kmalloc和vmalloc的区别有以下几点：
+
+* kmalloc保证分配的内存在物理上是连续的，而vmalloc保证的是在虚拟地址空间上的连续，但是在物理上它们不要求连续。
+* kmalloc分配的内存处于3GB～high_memory之间，而vmalloc分配的内存在high_memory之后。
+* kmalloc分配的内存大小有限制，一般不能超过128KB，而vmalloc可以分配较大的内存空间。
+* kmalloc比vmalloc要快。这主要是因为vmalloc为了把物理内存上不连续的页转换为虚拟地址空间上连续的页，必须专门建立页表项。
+
+## EPT
+
+* VOL3 29.3 THE EXTENDED PAGE TABLE MECHANISM (EPT)
+* VOL3 Table 28-7. Exit Qualification for EPT Violations

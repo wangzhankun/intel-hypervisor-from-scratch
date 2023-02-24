@@ -15,6 +15,8 @@ static cpumask_var_t cpus_hardware_enabled;
 uint64_t g_stack_pointer_for_returning;
 uint64_t g_base_pointer_for_returning;
 
+PEPT_STATE g_ept_state = NULL; // init in initVMX
+
 extern void VmentryHandler(void); // defined in VmentryHandler.s
 
 extern void VmexitHandler(void); // defined in VmexitHandler.s
@@ -72,10 +74,54 @@ static void disableVMX(VIRTUAL_MACHINE_STATE *guest_state)
     }
 }
 
-static void _exitVMX(void *unused)
+static void destructVirtualMachineState(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    int cpu = raw_smp_processor_id();
+    if (guest_state == NULL)
+        return;
+    freeVMCSRegion(guest_state);
+    freeVMXRegion(guest_state);
+    freeMsrBitmap(guest_state);
+    if (guest_state->VmmStack)
+        kfree((void *)guest_state->VmmStack);
+}
 
+static bool constructVirtualMachineState(VIRTUAL_MACHINE_STATE *guest_state)
+{
+    // allocate stack for the VM exit handler
+    uint64_t vmm_stack_va = kmalloc(VMM_STACK_SIZE, GFP_KERNEL);
+    if (!vmm_stack_va)
+    {
+        LOG_ERR("Failed to allocate VMM stack");
+        return false;
+    }
+    memset((void *)vmm_stack_va, 0, VMM_STACK_SIZE);
+    guest_state->VmmStack = vmm_stack_va;
+
+    if (!allocateVMXRegion(guest_state))
+    {
+        LOG_ERR("Failed to allocate VMX region");
+        goto ERR;
+    }
+
+    if (!allocateVMCSRegion(guest_state))
+    {
+        LOG_ERR("Failed to allocate VMCS region");
+        goto ERR;
+    }
+
+    if (!allocateMsrBitmap(guest_state))
+    {
+        LOG_ERR("Failed to allocate stack region");
+        goto ERR;
+    }
+    return true;
+ERR:
+    destructVirtualMachineState(guest_state);
+    return false;
+}
+
+static void __exitVMXOnCpu(int cpu)
+{
     LOG_INFO("Terminating VMX on CPU %d", cpu);
 
     VIRTUAL_MACHINE_STATE *guest_state = &g_guest_state[cpu];
@@ -86,55 +132,49 @@ static void _exitVMX(void *unused)
         return;
     }
 
-    cpumask_clear_cpu(cpu, cpus_hardware_enabled);
-
     disableVMX(guest_state);
-    freeVMCSRegion(guest_state);
-    freeVMXRegion(guest_state);
+    destructVirtualMachineState(guest_state);
+    cpumask_clear_cpu(cpu, cpus_hardware_enabled);
+}
+
+static void _exitVMX(void *unused)
+{
+    int cpu = raw_smp_processor_id();
+
+    __exitVMXOnCpu(cpu);
 }
 
 static void _initVMX(void *unused)
 {
     int cpu = raw_smp_processor_id();
+    if (cpumask_test_cpu(cpu, cpus_hardware_enabled))
+        return;
+    cpumask_set_cpu(cpu, cpus_hardware_enabled);
 
     LOG_INFO("Initializing VMX on CPU %d", cpu);
 
     VIRTUAL_MACHINE_STATE *guest_state = &g_guest_state[cpu];
 
-    if (cpumask_test_cpu(cpu, cpus_hardware_enabled))
-        return;
-
-    cpumask_set_cpu(cpu, cpus_hardware_enabled);
-
-    if (!allocateVMXRegion(guest_state))
+    if (!constructVirtualMachineState(guest_state))
     {
-        cpumask_clear_cpu(cpu, cpus_hardware_enabled);
-        LOG_ERR("Failed to allocate VMX region on CPU %d", cpu);
-        return;
-    }
-
-    if (!allocateVMCSRegion(guest_state))
-    {
-        cpumask_clear_cpu(cpu, cpus_hardware_enabled);
-        freeVMXRegion(guest_state);
-        LOG_ERR("Failed to allocate VMCS region on CPU %d", cpu);
-        return;
+        LOG_ERR("Failed to construct virtual state on CPU %d", cpu);
+        goto ERR;
     }
 
     if (enableVMX(guest_state) == false)
     {
-        cpumask_clear_cpu(cpu, cpus_hardware_enabled);
-        freeVMCSRegion(guest_state);
-        freeVMXRegion(guest_state);
         LOG_ERR("Failed to enable VMX on CPU %d", cpu);
-        return;
+        goto ERR;
     }
-
+    return;
+ERR:
+    __exitVMXOnCpu(cpu);
     return;
 }
 
 void exitVMX(void)
 {
+
     on_each_cpu((smp_call_func_t)_exitVMX, NULL, 1);
     int cpu_num = cpumask_weight(cpus_hardware_enabled);
     if (cpu_num != 0)
@@ -142,14 +182,23 @@ void exitVMX(void)
         LOG_ERR("VMX is still enabled on %d CPUs", cpu_num);
     }
     free_cpumask_var(cpus_hardware_enabled);
+
+    destoryEPT2(g_ept_state); // early consturct, late destruct
+    g_ept_state = NULL;
 }
 
 BOOL initVMX(void)
 {
+    g_ept_state = initEPT2();
+    if (g_ept_state == NULL)
+    {
+        LOG_ERR("init ept operation failed");
+        return -1;
+    }
+
     for (int i = 0; i < 32; i++)
     {
-        g_guest_state[i].VmxonRegion = 0;
-        g_guest_state[i].VmcsRegion = 0;
+        memset(&g_guest_state[i], 0, sizeof(VIRTUAL_MACHINE_STATE));
     }
 
     if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
@@ -412,7 +461,7 @@ void initVmcsGuestState(void)
     // vmwrite(VMWRITE_BITMAP, vmx->vmwrite_gpa);
 }
 
-void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPTP eptp)
+void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
 {
     initVmcsControlFields();
     LOG_INFO("initVmcsControlFields success");
@@ -420,6 +469,14 @@ void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPTP eptp)
     LOG_INFO("initVmcsHostState success");
     initVmcsGuestState();
     LOG_INFO("initVmcsGuestState success");
+
+    // 设置EPT
+    vmwrite(EPT_POINTER, ept_state->EptPointer.All);
+    // enable EPT
+    vmwrite(SECONDARY_VM_EXEC_CONTROL, AdjustControls(
+                                           SECONDARY_EXEC_ENABLE_RDTSCP | SECONDARY_EXEC_ENABLE_EPT |
+                                               SECONDARY_EXEC_ENABLE_INVPCID | SECONDARY_ENABLE_XSAV_RESTORE,
+                                           MSR_IA32_VMX_PROCBASED_CTLS2));
 
     //
     // left here just for test
@@ -435,30 +492,11 @@ void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPTP eptp)
 void _launchVm(void *stack)
 {
     int cpu = -1;
-    PEPTP eptp = NULL;
+    PEPT_STATE ept_state = NULL;
     memcpy(&cpu, stack, sizeof(int));
-    memcpy(&eptp, stack + sizeof(int), sizeof(PEPTP));
+    memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
 
-    LOG_INFO("Launching VM on CPU %d, eptp = %p", cpu, eptp);
-
-    // allocate stack for the VM exit handler
-    uint64_t vmm_stack_va = kmalloc(VMM_STACK_SIZE, GFP_KERNEL);
-    if (!vmm_stack_va)
-    {
-        LOG_ERR("Failed to allocate VMM stack");
-        return;
-    }
-    memset((void *)vmm_stack_va, 0, VMM_STACK_SIZE);
-    g_guest_state[cpu].VmmStack = vmm_stack_va;
-
-    // allocate MSR bitmap
-    g_guest_state[cpu].MsrBitmap = get_zeroed_page(GFP_KERNEL);
-    if (!g_guest_state[cpu].MsrBitmap)
-    {
-        LOG_ERR("Failed to allocate MSR bitmap");
-        return;
-    }
-    g_guest_state[cpu].MsrBitmapPhysical = __pa(g_guest_state[cpu].MsrBitmap);
+    LOG_INFO("Launching VM on CPU %d, ept_state = %p", cpu, ept_state);
 
     // clearing the VMCS state and loading it as the current VMCS
     if (clearVMCSState(&g_guest_state[cpu]))
@@ -477,7 +515,7 @@ void _launchVm(void *stack)
     LOG_INFO("VMCS loaded\n");
 
     LOG_INFO("setting up VMCS\n");
-    setupVMCS(&g_guest_state[cpu], eptp);
+    setupVMCS(&g_guest_state[cpu], ept_state);
 
     // https://rayanfam.com/topics/hypervisor-from-scratch-part-5/#saving-a-return-point
     __asm__ __volatile__("movq %%rsp, %0"
@@ -502,7 +540,7 @@ void _launchVm(void *stack)
     return;
 }
 
-void launchVm(int cpu, PEPTP eptp)
+void launchVm(int cpu, PEPT_STATE ept_state)
 {
     LOG_INFO("Launching VM on CPU %d", cpu);
     char *stack = kmalloc(4096, GFP_KERNEL);
@@ -514,7 +552,7 @@ void launchVm(int cpu, PEPTP eptp)
     memset(stack, 0, 4096);
 
     memcpy(stack, &cpu, sizeof(int));
-    memcpy(stack + sizeof(int), &eptp, sizeof(PEPTP));
+    memcpy(stack + sizeof(int), &ept_state, sizeof(PEPT_STATE));
 
     if (smp_processor_id() != cpu)
     {
@@ -531,73 +569,38 @@ void launchVm(int cpu, PEPTP eptp)
     kfree(stack);
 }
 
-void exitVm(int cpu, PEPTP eptp)
+void _exitVm(void *stack)
 {
+    int cpu;
+    PEPT_STATE ept_state;
+    memcpy(&cpu, stack, sizeof(int));
+    memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
+
     vmxoff();
     clearVMCSState(&g_guest_state[cpu]);
-    if (g_guest_state[cpu].MsrBitmap)
-    {
-        free_page(g_guest_state[cpu].MsrBitmap);
-        g_guest_state[cpu].MsrBitmap = NULL;
-    }
+
     if (g_guest_state[cpu].VmmStack)
     {
-        kfree(g_guest_state[cpu].VmmStack);
+        kfree((void*)(g_guest_state[cpu].VmmStack));
         g_guest_state[cpu].VmmStack = NULL;
     }
 }
 
-bool isSupportedVMX(void)
+void exitVm(int cpu, PEPT_STATE ept_state)
 {
-    if (cpu_has_vmx() == false)
+    char *stack = kmalloc(PAGE_SIZE, GFP_KERNEL);
+    if (!stack)
     {
-        LOG_ERR("VMX is not supported");
-        return false;
+        LOG_ERR("Failed to allocate stack");
+        return;
     }
 
-    IA32_FEATURE_CONTROL_MSR_BITs msr = {0};
+    memcpy(stack, &cpu, sizeof(int));
+    memcpy(stack + sizeof(int), &ept_state, sizeof(PEPT_STATE));
 
-    msr.All = get_msr(MSR_IA32_FEAT_CTL);
-
-    if (msr.Fields.EnableVmxon != 0x1)
+    int err = smp_call_function_single(cpu, (smp_call_func_t)_exitVm, (void *)stack, 1);
+    if (err)
     {
-        LOG_ERR("VMX is not enabled by BIOS");
-        return false;
+        LOG_ERR("Failed to exit VM on CPU %d, errno = %d", cpu, err);
     }
-
-    uint64_t cr4 = get_cr4();
-    if ((cr4 & X86_CR4_VMXE))
-    {
-        LOG_ERR("VMX has been enabled by other hypervisor");
-        return false;
-    }
-
-    uint64_t cr0 = get_cr0();
-    if (((cr0 & X86_CR0_PE) == 0) || ((cr0 & X86_CR0_PG) == 0 || (cr0 & X86_CR0_NE) == 0))
-    {
-        // 24.8 RESTRICTIONS ON VMX OPERATION
-        LOG_ERR("CR0 is not supported! cr0 = 0x%llx", cr0);
-        if (cr0 & X86_CR0_PE == 0)
-        {
-            LOG_ERR("X86_CR0_PE is not set");
-        }
-        if (cr0 & X86_CR0_PG == 0)
-        {
-            LOG_ERR("X86_CR0_PG is not set");
-        }
-        if (cr0 & X86_CR0_NE == 0)
-        {
-            LOG_ERR("X86_CR0_NE is not set");
-        }
-        return false;
-    }
-
-    RFLAGs rflags = get_rflags();
-    if (rflags.Fields.VM)
-    {
-        LOG_ERR("VMX is not supported in virtual 8086 mode");
-        return false;
-    }
-
-    return true;
 }

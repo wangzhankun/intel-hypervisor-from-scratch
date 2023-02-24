@@ -2,19 +2,84 @@
 #define __EPTP_H__
 
 #include "./global.h"
+#include <linux/list.h> // define list_head
+// MTRR Physical Base MSRs
+#define MSR_IA32_MTRR_PHYSBASE0                                          0x00000200
+#define MSR_IA32_MTRR_PHYSBASE1                                          0x00000202
+#define MSR_IA32_MTRR_PHYSBASE2                                          0x00000204
+#define MSR_IA32_MTRR_PHYSBASE3                                          0x00000206
+#define MSR_IA32_MTRR_PHYSBASE4                                          0x00000208
+#define MSR_IA32_MTRR_PHYSBASE5                                          0x0000020A
+#define MSR_IA32_MTRR_PHYSBASE6                                          0x0000020C
+#define MSR_IA32_MTRR_PHYSBASE7                                          0x0000020E
+#define MSR_IA32_MTRR_PHYSBASE8                                          0x00000210
+#define MSR_IA32_MTRR_PHYSBASE9                                          0x00000212
+
+// MTRR Physical Mask MSRs
+#define MSR_IA32_MTRR_PHYSMASK0                                          0x00000201
+#define MSR_IA32_MTRR_PHYSMASK1                                          0x00000203
+#define MSR_IA32_MTRR_PHYSMASK2                                          0x00000205
+#define MSR_IA32_MTRR_PHYSMASK3                                          0x00000207
+#define MSR_IA32_MTRR_PHYSMASK4                                          0x00000209
+#define MSR_IA32_MTRR_PHYSMASK5                                          0x0000020B
+#define MSR_IA32_MTRR_PHYSMASK6                                          0x0000020D
+#define MSR_IA32_MTRR_PHYSMASK7                                          0x0000020F
+#define MSR_IA32_MTRR_PHYSMASK8                                          0x00000211
+#define MSR_IA32_MTRR_PHYSMASK9                                          0x00000213
+
+
+// Memory Types
+#define MEMORY_TYPE_UNCACHEABLE                                      0x00000000
+#define MEMORY_TYPE_WRITE_COMBINING                                  0x00000001
+#define MEMORY_TYPE_WRITE_THROUGH                                    0x00000004
+#define MEMORY_TYPE_WRITE_PROTECTED                                  0x00000005
+#define MEMORY_TYPE_WRITE_BACK                                       0x00000006
+#define MEMORY_TYPE_INVALID                                          0x000000FF
+
+
+// The number of 512GB PML4 entries in the page table/
+#define VMM_EPT_PML4E_COUNT 512
+
+// The number of 1GB PDPT entries in the page table per 512GB PML4 entry.
+#define VMM_EPT_PML3E_COUNT 512
+
+// Then number of 2MB Page Directory entries in the page table per 1GB PML3 entry.
+#define VMM_EPT_PML2E_COUNT 512
+
+// Then number of 4096 byte Page Table entries in the page table per 2MB PML2 entry when dynamically split.
+#define VMM_EPT_PML1E_COUNT 512
+
+// Integer 2MB
+#define SIZE_2_MB ((u32)(512 * PAGE_SIZE))
+
+// Offset into the 1st paging structure (4096 byte)
+#define ADDRMASK_EPT_PML1_OFFSET(_VAR_) (_VAR_ & 0xFFFULL)
+
+// Index of the 1st paging structure (4096 byte)
+#define ADDRMASK_EPT_PML1_INDEX(_VAR_) ((_VAR_ & 0x1FF000ULL) >> 12)
+
+// Index of the 2nd paging structure (2MB)
+#define ADDRMASK_EPT_PML2_INDEX(_VAR_) ((_VAR_ & 0x3FE00000ULL) >> 21)
+
+// Index of the 3rd paging structure (1GB)
+#define ADDRMASK_EPT_PML3_INDEX(_VAR_) ((_VAR_ & 0x7FC0000000ULL) >> 30)
+
+// Index of the 4th paging structure (512GB)
+#define ADDRMASK_EPT_PML4_INDEX(_VAR_) ((_VAR_ & 0xFF8000000000ULL) >> 39)
+
 
 // See Table 24-8. Format of Extended-Page-Table Pointer
 typedef union _EPTP
 {
-    uint64_t All;
+    u64 All;
     struct
     {
-        uint64_t MemoryType : 3;            // bit 2:0 (0 = Uncacheable (UC) - 6 = Write - back(WB))
-        uint64_t PageWalkLength : 3;        // bit 5:3 (This value is 1 less than the EPT page-walk length)
-        uint64_t DirtyAndAceessEnabled : 1; // bit 6  (Setting this control to 1 enables accessed and dirty flags for EPT)
-        uint64_t Reserved1 : 5;             // bit 11:7
-        uint64_t PML4PhysialAddress : 36;
-        uint64_t Reserved2 : 16;
+        u64 MemoryType : 3;            // bit 2:0 (0 = Uncacheable (UC) - 6 = Write - back(WB))
+        u64 PageWalkLength : 3;        // bit 5:3 (This value is 1 less than the EPT page-walk length)
+        u64 DirtyAndAceessEnabled : 1; // bit 6  (Setting this control to 1 enables accessed and dirty flags for EPT)
+        u64 Reserved1 : 5;             // bit 11:7
+        u64 PML4PhysialAddress : 36;   // the physical address (have divided by PAGE_SIZE) of the 4-KByte aligned EPT PML4 table.
+        u64 Reserved2 : 16;
     } Fields;
 } EPTP, *PEPTP;
 
@@ -22,90 +87,290 @@ typedef union _EPTP
 // See Table 28-1.
 typedef union _EPT_PML4E
 {
-    uint64_t All;
+    u64 All;
     struct
     {
-        uint64_t Read : 1;               // bit 0
-        uint64_t Write : 1;              // bit 1
-        uint64_t Execute : 1;            // bit 2
-        uint64_t Reserved1 : 5;          // bit 7:3 (Must be Zero)
-        uint64_t Accessed : 1;           // bit 8
-        uint64_t Ignored1 : 1;           // bit 9
-        uint64_t ExecuteForUserMode : 1; // bit 10
-        uint64_t Ignored2 : 1;           // bit 11
-        uint64_t PhysicalAddress : 36;   // bit (N-1):12 or Page-Frame-Number
-        uint64_t Reserved2 : 4;          // bit 51:N
-        uint64_t Ignored3 : 12;          // bit 63:52
+        u64 Read : 1;               // bit 0
+        u64 Write : 1;              // bit 1
+        u64 Execute : 1;            // bit 2
+        u64 Reserved1 : 5;          // bit 7:3 (Must be Zero)
+        u64 Accessed : 1;           // bit 8
+        u64 Ignored1 : 1;           // bit 9
+        u64 ExecuteForUserMode : 1; // bit 10
+        u64 Ignored2 : 1;           // bit 11
+        u64 PhysicalAddress : 36;   // bit (N-1):12 or Page-Frame-Number
+        u64 Reserved2 : 4;          // bit 51:N
+        u64 Ignored3 : 12;          // bit 63:52
     } Fields;
 } EPT_PML4E, *PEPT_PML4E;
 
 // EPT Page-Directory-Pointer-Table Entry
 typedef union _EPT_PDPTE
 {
-    uint64_t All;
+    u64 All;
     struct
     {
-        uint64_t Read : 1;               // bit 0
-        uint64_t Write : 1;              // bit 1
-        uint64_t Execute : 1;            // bit 2
-        uint64_t Reserved1 : 5;          // bit 7:3 (Must be Zero)
-        uint64_t Accessed : 1;           // bit 8
-        uint64_t Ignored1 : 1;           // bit 9
-        uint64_t ExecuteForUserMode : 1; // bit 10
-        uint64_t Ignored2 : 1;           // bit 11
-        uint64_t PhysicalAddress : 36;   // bit (N-1):12 or Page-Frame-Number
-        uint64_t Reserved2 : 4;          // bit 51:N
-        uint64_t Ignored3 : 12;          // bit 63:52
+        u64 Read : 1;               // bit 0
+        u64 Write : 1;              // bit 1
+        u64 Execute : 1;            // bit 2
+        u64 Reserved1 : 5;          // bit 7:3 (Must be Zero)
+        u64 Accessed : 1;           // bit 8
+        u64 Ignored1 : 1;           // bit 9
+        u64 ExecuteForUserMode : 1; // bit 10
+        u64 Ignored2 : 1;           // bit 11
+        u64 PhysicalAddress : 36;   // bit (N-1):12 or Page-Frame-Number
+        u64 Reserved2 : 4;          // bit 51:N
+        u64 Ignored3 : 12;          // bit 63:52
     } Fields;
 } EPT_PDPTE, *PEPT_PDPTE;
 
 // EPT Page-Directory Entry
 typedef union _EPT_PDE
 {
-    uint64_t All;
+    u64 All;
     struct
     {
-        uint64_t Read : 1;               // bit 0
-        uint64_t Write : 1;              // bit 1
-        uint64_t Execute : 1;            // bit 2
-        uint64_t Reserved1 : 5;          // bit 7:3 (Must be Zero)
-        uint64_t Accessed : 1;           // bit 8
-        uint64_t Ignored1 : 1;           // bit 9
-        uint64_t ExecuteForUserMode : 1; // bit 10
-        uint64_t Ignored2 : 1;           // bit 11
-        uint64_t PhysicalAddress : 36;   // bit (N-1):12 or Page-Frame-Number
-        uint64_t Reserved2 : 4;          // bit 51:N
-        uint64_t Ignored3 : 12;          // bit 63:52
+        u64 Read : 1;               // bit 0
+        u64 Write : 1;              // bit 1
+        u64 Execute : 1;            // bit 2
+        u64 Reserved1 : 5;          // bit 7:3 (Must be Zero)
+        u64 Accessed : 1;           // bit 8
+        u64 Ignored1 : 1;           // bit 9
+        u64 ExecuteForUserMode : 1; // bit 10
+        u64 Ignored2 : 1;           // bit 11
+        u64 PhysicalAddress : 36;   // bit (N-1):12 or Page-Frame-Number
+        u64 Reserved2 : 4;          // bit 51:N
+        u64 Ignored3 : 12;          // bit 63:52
     } Fields;
 } EPT_PDE, *PEPT_PDE;
 
 // EPT Page-Table Entry
 typedef union _EPT_PTE
 {
-    uint64_t All;
+    u64 All;
     struct
     {
-        uint64_t Read : 1;               // bit 0
-        uint64_t Write : 1;              // bit 1
-        uint64_t Execute : 1;            // bit 2
-        uint64_t EPTMemoryType : 3;      // bit 5:3 (EPT Memory type)
-        uint64_t IgnorePAT : 1;          // bit 6
-        uint64_t Ignored1 : 1;           // bit 7
-        uint64_t AccessedFlag : 1;       // bit 8
-        uint64_t DirtyFlag : 1;          // bit 9
-        uint64_t ExecuteForUserMode : 1; // bit 10
-        uint64_t Ignored2 : 1;           // bit 11
-        uint64_t PhysicalAddress : 36;   // bit (N-1):12 or Page-Frame-Number
-        uint64_t Reserved : 4;           // bit 51:N
-        uint64_t Ignored3 : 11;          // bit 62:52
-        uint64_t SuppressVE : 1;         // bit 63
+        u64 Read : 1;               // bit 0
+        u64 Write : 1;              // bit 1
+        u64 Execute : 1;            // bit 2
+        u64 EPTMemoryType : 3;      // bit 5:3 (EPT Memory type)
+        u64 IgnorePAT : 1;          // bit 6
+        u64 Ignored1 : 1;           // bit 7
+        u64 AccessedFlag : 1;       // bit 8
+        u64 DirtyFlag : 1;          // bit 9
+        u64 ExecuteForUserMode : 1; // bit 10
+        u64 Ignored2 : 1;           // bit 11
+        u64 PhysicalAddress : 36;   // bit (N-1):12 or Page-Frame-Number
+        u64 Reserved : 4;           // bit 51:N
+        u64 Ignored3 : 11;          // bit 62:52
+        u64 SuppressVE : 1;         // bit 63
     } Fields;
 } EPT_PTE, *PEPT_PTE;
 
+typedef union 
+{
+	struct
+	{
+		/**
+		 * [Bit 0] Read access; indicates whether reads are allowed from the 2-MByte page referenced by this entry.
+		 */
+		u64 ReadAccess : 1;
 
-extern uint64_t g_virtual_guest_memory_address;
+		/**
+		 * [Bit 1] Write access; indicates whether writes are allowed from the 2-MByte page referenced by this entry.
+		 */
+		u64 WriteAccess : 1;
 
-PEPTP initEPT(void);
-void destoryEPT(PEPTP ept_pointer);
+		/**
+		 * [Bit 2] If the "mode-based execute control for EPT" VM-execution control is 0, execute access; indicates whether
+		 * instruction fetches are allowed from the 2-MByte page controlled by this entry.
+		 * If that control is 1, execute access for supervisor-mode linear addresses; indicates whether instruction fetches are
+		 * allowed from supervisor-mode linear addresses in the 2-MByte page controlled by this entry.
+		 */
+		u64 ExecuteAccess : 1;
+
+		/**
+		 * [Bits 5:3] EPT memory type for this 2-MByte page.
+		 *
+		 * @see Vol3C[28.2.6(EPT and memory Typing)]
+		 */
+		u64 MemoryType : 3;
+
+		/**
+		 * [Bit 6] Ignore PAT memory type for this 2-MByte page.
+		 *
+		 * @see Vol3C[28.2.6(EPT and memory Typing)]
+		 */
+		u64 IgnorePat : 1;
+
+		/**
+		 * [Bit 7] Must be 1 (otherwise, this entry references an EPT page table).
+		 */
+		u64 LargePage : 1;
+
+		/**
+		 * [Bit 8] If bit 6 of EPTP is 1, accessed flag for EPT; indicates whether software has accessed the 2-MByte page
+		 * referenced by this entry. Ignored if bit 6 of EPTP is 0.
+		 *
+		 * @see Vol3C[28.2.4(Accessed and Dirty Flags for EPT)]
+		 */
+		u64 Accessed : 1;
+
+		/**
+		 * [Bit 9] If bit 6 of EPTP is 1, dirty flag for EPT; indicates whether software has written to the 2-MByte page referenced
+		 * by this entry. Ignored if bit 6 of EPTP is 0.
+		 *
+		 * @see Vol3C[28.2.4(Accessed and Dirty Flags for EPT)]
+		 */
+		u64 Dirty : 1;
+
+		/**
+		 * [Bit 10] Execute access for user-mode linear addresses. If the "mode-based execute control for EPT" VM-execution control
+		 * is 1, indicates whether instruction fetches are allowed from user-mode linear addresses in the 2-MByte page controlled
+		 * by this entry. If that control is 0, this bit is ignored.
+		 */
+		u64 UserModeExecute : 1;
+		u64 Reserved1 : 10;
+
+		/**
+		 * [Bits 47:21] Physical address of 4-KByte aligned EPT page-directory-pointer table referenced by this entry.
+		 */
+		u64 PageFrameNumber : 27;
+		u64 Reserved2 : 15;
+
+		/**
+		 * [Bit 63] Suppress \#VE. If the "EPT-violation \#VE" VM-execution control is 1, EPT violations caused by accesses to this
+		 * page are convertible to virtualization exceptions only if this bit is 0. If "EPT-violation \#VE" VMexecution control is
+		 * 0, this bit is ignored.
+		 *
+		 * @see Vol3C[25.5.6.1(Convertible EPT Violations)]
+		 */
+		u64 SuppressVe : 1;
+	};
+
+	u64 All;
+} EPT_PDE_2MB, * PEPT_PDE_2MB;
+
+
+typedef EPT_PML4E EPT_PML4_POINTER, * PEPT_PML4_POINTER;
+typedef EPT_PDPTE EPT_PML3_POINTER, * PEPT_PML3_POINTER;
+typedef EPT_PDE_2MB EPT_PML2_ENTRY, * PEPT_PML2_ENTRY;
+typedef EPT_PDE EPT_PML2_POINTER, * PEPT_PML2_POINTER;
+typedef EPT_PTE EPT_PML1_ENTRY, * PEPT_PML1_ENTRY;
+
+
+// MSR_IA32_MTRR_PHYSBASE(0-9)
+typedef union 
+{
+	struct
+	{
+		/**
+		 * [Bits 7:0] Specifies the memory type for the range.
+		 */
+		u64 Type : 8;
+		u64 Reserved1 : 4;
+
+		/**
+		 * [Bits 47:12] Specifies the base address of the address range. This 24-bit value, in the case where MAXPHYADDR is 36
+		 * bits, is extended by 12 bits at the low end to form the base address (this automatically aligns the address on a 4-KByte
+		 * boundary).
+		 */
+		u64 PageFrameNumber : 36;
+		u64 Reserved2 : 16;
+	};
+
+	u64 All;
+} IA32_MTRR_PHYSBASE_REGISTER_BITS, * PIA32_MTRR_PHYSBASE_REGISTER_BITS;
+
+
+// MSR_IA32_MTRR_PHYSMASK(0-9).
+typedef union 
+{
+	struct
+	{
+		/**
+		 * [Bits 7:0] Specifies the memory type for the range.
+		 */
+		u64 Type : 8;
+		u64 Reserved1 : 3;
+
+		/**
+		 * [Bit 11] Enables the register pair when set; disables register pair when clear.
+		 */
+		u64 Valid : 1;
+
+		/**
+		 * [Bits 47:12] Specifies a mask (24 bits if the maximum physical address size is 36 bits, 28 bits if the maximum physical
+		 * address size is 40 bits). The mask determines the range of the region being mapped, according to the following
+		 * relationships:
+		 * - Address_Within_Range AND PhysMask = PhysBase AND PhysMask
+		 * - This value is extended by 12 bits at the low end to form the mask value.
+		 * - The width of the PhysMask field depends on the maximum physical address size supported by the processor.
+		 * CPUID.80000008H reports the maximum physical address size supported by the processor. If CPUID.80000008H is not
+		 * available, software may assume that the processor supports a 36-bit physical address size.
+		 *
+		 * @see Vol3A[11.11.3(Example Base and Mask Calculations)]
+		 */
+		u64 PageFrameNumber : 36;
+		u64 Reserved2 : 16;
+	};
+
+	u64 All;
+} IA32_MTRR_PHYSMASK_REGISTER_BITS, * PIA32_MTRR_PHYSMASK_REGISTER_BITS;
+
+typedef struct
+{
+	u64 PhysicalBaseAddress;
+	u64 PhysicalEndAddress;
+	u8 MemoryType;
+} MTRR_RANGE_DESCRIPTOR, * PMTRR_RANGE_DESCRIPTOR;
+
+typedef struct _VMM_EPT_PAGE_TABLE
+{
+	/**
+	 * 28.2.2 Describes 512 contiguous 512GB memory regions each with 512 1GB regions.
+	 */
+    __attribute__((aligned(PAGE_SIZE))) EPT_PML4_POINTER PML4[VMM_EPT_PML4E_COUNT];
+
+	/**
+	 * Describes exactly 512 contiguous 1GB memory regions within a our singular 512GB PML4 region.
+	 */
+	__attribute__((aligned(PAGE_SIZE))) EPT_PML3_POINTER PML3[VMM_EPT_PML3E_COUNT];
+
+	/**
+	 * For each 1GB PML3 entry, create 512 2MB entries to map identity.
+	 * NOTE: We are using 2MB pages as the smallest paging size in our map, so we do not manage individiual 4096 byte pages.
+	 * Therefore, we do not allocate any PML1 (4096 byte) paging structures.
+	 */
+	__attribute__((aligned(PAGE_SIZE))) EPT_PML2_ENTRY PML2[VMM_EPT_PML3E_COUNT][VMM_EPT_PML2E_COUNT];
+
+	/**
+	 * List of all allocated dynamic splits. Used to free dynamic entries at the end of execution.
+	 * A dynamic split is a 2MB page that's been split into 512 4096 size pages.
+	 * This is used only on request when a specific page's protections need to be split.
+	 */
+	struct list_head DynamicSplitList;
+
+
+} VMM_EPT_PAGE_TABLE, * PVMM_EPT_PAGE_TABLE;
+
+
+typedef struct
+{
+	MTRR_RANGE_DESCRIPTOR MemoryRanges[9];							// Physical memory ranges described by the BIOS in the MTRRs. Used to build the EPT identity mapping.
+	u32 NumberOfEnabledMemoryRanges;								// Number of memory ranges specified in MemoryRanges
+	EPTP   EptPointer;												// Extended-Page-Table Pointer 
+	PVMM_EPT_PAGE_TABLE EptPageTable;							    // Page table entries for EPT operation
+
+} EPT_STATE, * PEPT_STATE;
+
+
+extern u64 g_virtual_guest_memory_address;
+
+// PEPTP initEPT(void);
+PEPT_STATE initEPT2(void);
+
+// void destoryEPT(PEPTP ept_pointer);
+void destoryEPT2(PEPT_STATE ept_state);
 
 #endif // __EPTP_H__

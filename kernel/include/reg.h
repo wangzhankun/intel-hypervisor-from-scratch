@@ -153,6 +153,37 @@ struct DescPtr
 	uint64_t address;
 } __attribute__((packed));
 
+typedef union
+{
+	// If the MTRR flag is set (indicating that the processor implements MTRRs), additional information about MTRRs can
+	// be obtained from the 64 - bit IA32_MTRRCAP MSR
+	uint64_t All;
+	struct
+	{
+		uint64_t VCNT : 8;		// [0-7] // variable range registers count
+		uint64_t FIX : 1;		// [8] // Fixed-range MTRRs are supported when bit 8 is set; 
+		uint64_t Reserved1 : 1; // [9]
+		uint64_t WC : 1;		// [10] write-combining memory type is supported when set
+		uint64_t SMRR : 1;		// [11] The system-management range register
+								// (SMRR) interface is supported when bit 11 is set; //
+								// the SMRR interface is not supported when clear.
+		uint64_t Reserved2 : 52;
+	} Fields;
+} MSR_MTRR_CAP_BITS;
+typedef union
+{
+	uint64_t All;
+	struct
+	{
+		u64 type : 8;//indicates the default memory type
+		u64 reserved1 : 2;
+		u64 fixed : 1; // fixed range MTRR enable/disable
+		u64 e : 1;	   // MTRR enable/disable
+		u64 reserved2 : 52;
+	} Fields;
+} MSR_MTRR_DEF_TYPE_BITS;
+
+
 static inline uint64_t hyper_rdmsr(uint32_t msr)
 {
 	uint32_t a, d;
