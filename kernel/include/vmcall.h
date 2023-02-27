@@ -3,6 +3,7 @@
 
 #include "../include/types.h"
 
+#define VMCALL_BACK_TO_HOST             0x0			// VMCALL to return to the host
 #define VMCALL_TEST						0x1			// Test VMCALL
 #define VMCALL_VMXOFF					0x2			// Call VMXOFF to turn off the hypervisor
 #define VMCALL_EXEC_HOOK_PAGE			0x3			// VMCALL to Hook ExecuteAccess bit of the EPT Table

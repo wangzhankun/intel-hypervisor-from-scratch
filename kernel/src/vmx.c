@@ -12,7 +12,6 @@
 
 VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
 static cpumask_var_t cpus_hardware_enabled;
-PEPT_STATE g_ept_state = NULL;
 
 uint64_t g_stack_pointer_for_returning;
 uint64_t g_base_pointer_for_returning;
@@ -52,11 +51,10 @@ static bool enableVMX(VIRTUAL_MACHINE_STATE *guest_state)
         LOG_ERR("vmxon failed");
         return false;
     }
-
     return true;
 }
 
-static void disableVMX(VIRTUAL_MACHINE_STATE *guest_state)
+static void disableVMX(void)
 {
     uint64_t cr4 = get_cr4();
     if (!(cr4 & X86_CR4_VMXE))
@@ -66,8 +64,6 @@ static void disableVMX(VIRTUAL_MACHINE_STATE *guest_state)
     }
     else
     {
-        // vmclear(guest_state->VmcsRegion);
-        vmxoff();
         cr4 &= ~X86_CR4_VMXE;
         set_cr4(cr4);
         LOG_INFO("VMX is disabled");
@@ -133,7 +129,8 @@ static void __exitVMXOnCpu(int cpu)
         return;
     }
 
-    disableVMX(guest_state);
+    vmxoff();
+
     destructVirtualMachineState(guest_state);
     cpumask_clear_cpu(cpu, cpus_hardware_enabled);
 }
@@ -184,8 +181,9 @@ void exitVMX(PEPT_STATE ept_state)
     }
     free_cpumask_var(cpus_hardware_enabled);
 
-    destoryEPT(ept_state); // early consturct, late destruct
+    destoryEPT2(ept_state); // early consturct, late destruct
     ept_state = NULL;
+    disableVMX();
 }
 
 PEPT_STATE initVMX(void)
@@ -196,14 +194,14 @@ PEPT_STATE initVMX(void)
         memset(&g_guest_state[i], 0, sizeof(VIRTUAL_MACHINE_STATE));
     }
 
-    g_ept_state = initEPT2();
-    if (g_ept_state == NULL)
+    PEPT_STATE ept_state = initEPT2();
+    if (ept_state == NULL)
     {
         LOG_ERR("init ept operation failed");
         return NULL;
     }
     ////////////////////ept page hook example
-    eptPageHook(kmalloc, false);
+    // eptPageHook(kmalloc, false);
     //////////////////////
 
     if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
@@ -217,11 +215,11 @@ PEPT_STATE initVMX(void)
     LOG_INFO("VMX is enabled on %d CPUs", cpu_num);
     if (cpu_num == num_online_cpus())
     {
-        return g_ept_state;
+        return ept_state;
     }
 
 ERR:
-    exitVMX(g_ept_state);
+    exitVMX(ept_state);
     return NULL;
 }
 
@@ -578,14 +576,13 @@ void _exitVm(void *stack)
     PEPT_STATE ept_state;
     memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
 
-    vmxoff();
-    clearVMCSState(&g_guest_state[cpu]);
-
-    if (g_guest_state[cpu].VmmStack)
+    if(clearVMCSState(&g_guest_state[cpu]))
     {
-        kfree((void *)(g_guest_state[cpu].VmmStack));
-        g_guest_state[cpu].VmmStack = NULL;
+        LOG_ERR("Failed to clear VMCS state");
+        return;
     }
+    LOG_INFO("VMCS state cleared\n");
+    return;
 }
 
 void exitVm(PEPT_STATE ept_state)

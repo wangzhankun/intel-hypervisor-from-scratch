@@ -14,15 +14,15 @@
 #define HYPERV_CPUID_MIN 0x40000005
 #define HYPERV_CPUID_MAX 0x4000ffff
 
-
-
-
 // uint64_t g_guest_rsp = 0, g_guest_rip = 0;
+extern u64 g_back_host_rip, g_back_host_rsp;
 extern uint64_t g_stack_pointer_for_returning;
 extern uint64_t g_base_pointer_for_returning;
 extern VIRTUAL_MACHINE_STATE g_guest_state[];
-extern bool eptVmxRootModePageHook(void* target_func, bool has_launched);
-extern int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification, u64 guest_phy_addr);//defined in eptp.c
+extern bool eptVmxRootModePageHook(void *target_func, bool has_launched);
+extern int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification, u64 guest_phy_addr); // defined in eptp.c
+extern void exitVMAndVMX(void); //defined in open_close.c
+
 
 /**
  * @brief handle CPUID instruction
@@ -148,7 +148,7 @@ void handleCRAccess(PGUEST_REGS GuestRegs)
             break;
         }
         default:
-            BREAKPOINT();
+            // BREAKPOINT();
             break;
         }
         break;
@@ -173,7 +173,7 @@ void handleCRAccess(PGUEST_REGS GuestRegs)
             break;
         }
         default:
-            BREAKPOINT();
+            // BREAKPOINT();
             break;
         }
         break;
@@ -296,6 +296,12 @@ void handleVmcall(PGUEST_REGS GuestRegs)
     u64 vmcall_code = GuestRegs->rdi;
     switch (vmcall_code)
     {
+    case VMCALL_BACK_TO_HOST:
+    {
+        // TODO save guest state
+        exitVMAndVMX();
+        break;
+    }
     case VMCALL_EXEC_HOOK_PAGE:
     {
         eptVmxRootModePageHook(GuestRegs->rsi, true);
@@ -326,8 +332,6 @@ void VmResumeInstruction(void)
     // BREAKPOINT();
 }
 
-
-
 #define vmreadError(ret)                      \
     {                                         \
         LOG_INFO("vmread error %llx\n", ret); \
@@ -344,7 +348,6 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     ret = vmread(EXIT_QUALIFICATION, &ExitQualification);
     vmreadError(ret);
 
-
     u64 guest_rsp = 0;
     ret = vmread(GUEST_RSP, &guest_rsp);
     vmreadError(ret);
@@ -352,7 +355,6 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     u64 guest_rip = 0;
     ret = vmread(GUEST_RIP, &guest_rip);
     vmreadError(ret);
-
 
     LOG_INFO("VM_EXIT_REASION 0x%llx\n", ExitReason & 0xffff);
     LOG_INFO("XIT_QUALIFICATION 0x%llx\n", ExitQualification);
@@ -369,8 +371,35 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
         // INVD, and XSETBV. This is also true of instructions introduced with VMX, which include: INVEPT, INVVPID,
         // VMCALL, VMCLEAR, VMLAUNCH, VMPTRLD, VMPTRST, VMRESUME, VMXOFF, and VMXON.
         //
-
+    case EXIT_REASON_EXCEPTION_NMI:
+    {
+        break;
+    }
+    case EXIT_REASON_TRIPLE_FAULT:
+    {
+        // Triple fault. The logical processor encountered an exception while attempting to call the double-fault handler and
+        // that exception did not itself cause a VM exit due to the exception bitmap.
+        // In x86 virtualization, the VMLAUNCH instruction is used to launch a virtual machine (VM) on the CPU.
+        // When the VMLAUNCH instruction is executed, the CPU transfers control to the guest operating system in the VM.
+        //
+        // If the guest operating system tries to execute privileged instructions that are not virtualized by the hypervisor,
+        // such as instructions that access hardware devices or modify system control registers,
+        // the CPU will raise a general protection fault (GP fault) exception.
+        // The hypervisor will intercept this exception and emulate the privileged instruction.
+        //
+        // However, if the guest operating system tries to execute an instruction that causes a page fault
+        // while the hypervisor's page tables are not correctly set up, this will result in a "double fault" exception.
+        // The hypervisor must handle this exception, typically by terminating the VM or by restarting it.
+        //
+        // If the hypervisor itself causes a fault while handling the double fault exception,
+        // this will result in a "triple fault". This is a fatal error that typically causes the CPU to reset and restart the system.
+        //
+        // So, a triple fault can occur after VMLAUNCH if there is a critical error during the handling of a double fault,
+        // such as a memory access violation or a stack overflow.
+        break;
+    }
     case EXIT_REASON_VMCLEAR:
+    case EXIT_REASON_VMLAUNCH:
     case EXIT_REASON_VMPTRLD:
     case EXIT_REASON_VMPTRST:
     case EXIT_REASON_VMREAD:
@@ -378,7 +407,6 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     case EXIT_REASON_VMWRITE:
     case EXIT_REASON_VMOFF:
     case EXIT_REASON_VMON:
-    case EXIT_REASON_VMLAUNCH:
     {
         uint64_t rf = vmreadz(GUEST_RFLAGS);
         rf |= 0x1; // set carry flag, mean vm instructions fail
@@ -402,10 +430,6 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
                              :
                              : "m"(g_base_pointer_for_returning));
 
-        break;
-    }
-    case EXIT_REASON_EXCEPTION_NMI:
-    {
         break;
     }
 
@@ -457,7 +481,6 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
         break;
     }
 
-
     default:
     {
         // BREAKPOINT();
@@ -471,7 +494,7 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     // We have to save GUEST_RIP & GUEST_RSP somewhere to restore them directly
     guest_rip = guest_rip + exit_inst_length;
     ret = vmwrite(GUEST_RIP, guest_rip);
-    if(ret != 0)
+    if (ret != 0)
     {
         LOG_INFO("vmwrite error %llx\n", ret);
     }

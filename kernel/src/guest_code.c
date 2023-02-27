@@ -31,6 +31,8 @@ void test_call(int a)
 
 void guestEntry(void)
 {
+    vmcall0(VMCALL_BACK_TO_HOST);
+
     unsigned eax, ebx, ecx, edx;
     eax = 0;
     __cpuid(&eax, &ebx, &ecx, &edx);

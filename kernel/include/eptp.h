@@ -519,5 +519,6 @@ PEPT_STATE initEPT2(void);
 void destoryEPT(PEPT_STATE ept_pointer);
 void destoryEPT2(PEPT_STATE ept_state);
 bool eptBuildMtrrMap(EPT_STATE *ept_state);
-bool eptPageHook(void *TargetFunc, bool has_launched);
+bool eptPageHook(PEPT_STATE ept_state, void *TargetFunc, bool has_launched);
+
 #endif // __EPTP_H__

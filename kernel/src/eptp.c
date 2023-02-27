@@ -3,15 +3,14 @@
 #include "../include/eptp.h"
 #include <linux/memory.h>
 #include "../include/cpu_features.h"
-#include <linux/slab.h>    // defined kmalloc
+#include <linux/slab.h> // defined kmalloc
 #include "../include/vmx.h"
 #include "../include/vmcall.h"
 
 uint64_t g_virtual_guest_memory_address = 0;
 extern VIRTUAL_MACHINE_STATE g_guest_state[]; // defined in vmx.c
-extern PEPT_STATE g_ept_state;                // defined in vmx.c
 
-bool eptPageHook(void *TargetFunc, bool has_launched);
+
 extern int eptInvept(uint64_t invept_type, void *desc);
 
 void initEPT_PML4E(PEPT_PML4E pml4e, PEPT_PDPTE pdpte)
@@ -200,9 +199,8 @@ void EptSetupPML2Entry(PEPT_STATE ept_state, PEPT_PML2_ENTRY pml2_entry, u32 Pag
 
     // ((EntryGroupIndex * VMM_EPT_PML2E_COUNT) + EntryIndex) * 2MB is the actual physical address we're mapping
 
-    // pml2_entry->PageFrameNumber = PageFrameNumber; // 这里并没有实际分配页面，因此不需要设置PageFrameNumber
-    pml2_entry->PageFrameNumber = 0;
-
+    pml2_entry->PageFrameNumber = PageFrameNumber; // 这里如果不这样设置的话，会出现 EXIT_REASON_TRIPLE_FAULT ,不知道为啥
+    // pml2_entry->PageFrameNumber = 0;
     // ((EntryGroupIndex * VMM_EPT_PML2E_COUNT) + EntryIndex) * 2MB is the actual physical address we're mapping
 
     u64 address_of_page = PageFrameNumber * SIZE_2_MB;
@@ -226,10 +224,10 @@ void EptSetupPML2Entry(PEPT_STATE ept_state, PEPT_PML2_ENTRY pml2_entry, u32 Pag
             // If we're here, this page fell within one of the ranges specified by the variable MTRRs
             // Therefore, we must mark this page as the same cache type exposed by the MTRR
             TargetMemoryType = ept_state->MemoryRanges[current_mtrr_range].MemoryType;
-        }
-        if (MEMORY_TYPE_UNCACHEABLE == TargetMemoryType)
-        {
-            break;
+            if (MEMORY_TYPE_UNCACHEABLE == TargetMemoryType)
+            {
+                break;
+            }
         }
     }
 
@@ -251,13 +249,13 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
     }
     memset(page_table, 0, sizeof(VMM_EPT_PAGE_TABLE));
 
-    isPageAligned(&page_table->PML4[0]);
-    isPageAligned(&page_table->PML3[0]);
-    isPageAligned(&page_table->PML2[0]);
+    // isPageAligned(&page_table->PML4[0]);
+    // isPageAligned(&page_table->PML3[0]);
+    // isPageAligned(&page_table->PML2[0]);
 
-    isPageAligned(__pa(&page_table->PML4[0]));
-    isPageAligned(__pa(&page_table->PML3[0]));
-    isPageAligned(__pa(&page_table->PML2[0]));
+    // isPageAligned(__pa(&page_table->PML4[0]));
+    // isPageAligned(__pa(&page_table->PML3[0]));
+    // isPageAligned(__pa(&page_table->PML2[0]));
 
     INIT_LIST_HEAD(&page_table->DynamicSplitList);
 
@@ -290,7 +288,7 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
     {
         for (int j = 0; j < VMM_EPT_PML2E_COUNT; j++)
         {
-            page_table->PML2[i][j] = pml2_entry_template;
+            page_table->PML2[i][j].All = pml2_entry_template.All;
             EptSetupPML2Entry(ept_state, &page_table->PML2[i][j], (i * VMM_EPT_PML2E_COUNT + j));
         }
     }
@@ -388,7 +386,7 @@ PEPT_STATE initEPT(void)
     PEPT_PDE pde = NULL;                       // each is PAGE_SIZE
     PEPT_PTE pte = NULL;                       // each is PAGE_SIZE
 
-    isPageAligned(ept_pointer);
+    // isPageAligned(ept_pointer);
 
     pml4e = get_zeroed_page(GFP_KERNEL);
 
@@ -652,7 +650,7 @@ bool eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     return true;
 }
 
-bool eptVmxRootModePageHook(void *target_func, bool has_launched)
+bool eptVmxRootModePageHook(PEPT_STATE ept_state, void *target_func, bool has_launched)
 {
     int cpu = smp_processor_id();
 
@@ -674,13 +672,13 @@ bool eptVmxRootModePageHook(void *target_func, bool has_launched)
 
     void *target_buffer = g_guest_state[cpu].PreAllocatedMemoryDetails.PreAllocatedBuffer;
 
-    if (!eptSplitLargePage(g_ept_state->EptPageTable, target_buffer, target_phy_addr, cpu))
+    if (!eptSplitLargePage(ept_state->EptPageTable, target_buffer, target_phy_addr, cpu))
     {
         LOG_ERR("eptSplitLargePage failed");
         return false;
     }
 
-    PEPT_PML1_ENTRY target_entry_pml1 = eptGetPml1Entry(g_ept_state->EptPageTable, target_phy_addr);
+    PEPT_PML1_ENTRY target_entry_pml1 = eptGetPml1Entry(ept_state->EptPageTable, target_phy_addr);
     if (target_entry_pml1 == NULL)
     {
         LOG_ERR("target_entry_pml1 is NULL");
@@ -704,7 +702,7 @@ bool eptVmxRootModePageHook(void *target_func, bool has_launched)
     {
         // Uncomment in order to invalidate all the contexts
         INVEPT_DESCRIPTOR Descriptor;
-        Descriptor.EptPointer = g_ept_state->EptPointer.All;
+        Descriptor.EptPointer = ept_state->EptPointer.All;
         Descriptor.Reserved = 0;
         eptInvept(1, &Descriptor);
     }
@@ -712,7 +710,7 @@ bool eptVmxRootModePageHook(void *target_func, bool has_launched)
     return true;
 }
 
-bool eptPageHook(void *TargetFunc, bool has_launched)
+bool eptPageHook(PEPT_STATE ept_state, void *TargetFunc, bool has_launched)
 {
     int logical_processor_number = smp_processor_id();
     if (g_guest_state[logical_processor_number].PreAllocatedMemoryDetails.PreAllocatedBuffer == NULL)
@@ -737,7 +735,7 @@ bool eptPageHook(void *TargetFunc, bool has_launched)
     }
     else
     {
-        if (eptVmxRootModePageHook(TargetFunc, has_launched) == true)
+        if (eptVmxRootModePageHook(ept_state, TargetFunc, has_launched) == true)
         {
             LOG_INFO("[*] Hook applied (VM has not launched)");
             return true;
