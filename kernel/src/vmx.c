@@ -196,14 +196,14 @@ PEPT_STATE initVMX(void)
         memset(&g_guest_state[i], 0, sizeof(VIRTUAL_MACHINE_STATE));
     }
 
-    g_ept_state = initEPT();
+    g_ept_state = initEPT2();
     if (g_ept_state == NULL)
     {
         LOG_ERR("init ept operation failed");
         return NULL;
     }
     ////////////////////ept page hook example
-    // eptPageHook(kmalloc, false);
+    eptPageHook(kmalloc, false);
     //////////////////////
 
     if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
@@ -531,7 +531,7 @@ void _launchVm(void *stack)
     // if fails, we should handle the error
     u32 error = vmreadz(VM_INSTRUCTION_ERROR);
     vmxoff();
-    LOG_ERR("Failed to launch VM: 0x%lld", error);
+    LOG_ERR("Failed to launch VM: %lld", error);
 
     // __asm__ __volatile__("int3");
 

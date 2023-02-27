@@ -36,10 +36,10 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    cout << "Press any key to stop the hypervisor" << endl;
+    // cout << "Press any key to stop the hypervisor" << endl;
 
-    char c;
-    cin >> c;
+    // char c;
+    // cin >> c;
 
     close(fd);
     return 0;

@@ -340,10 +340,22 @@ kmalloc和vmalloc的区别有以下几点：
 * kmalloc分配的内存大小有限制，一般不能超过128KB，而vmalloc可以分配较大的内存空间。
 * kmalloc比vmalloc要快。这主要是因为vmalloc为了把物理内存上不连续的页转换为虚拟地址空间上连续的页，必须专门建立页表项。
 
+kmalloc与get_zeored_page的区别：
+* Allocation size: kmalloc() can be used to allocate any size of memory, whereas get_zeroed_page() is used to allocate one page (usually 4 KB) of memory.
+* Memory initialization: kmalloc() does not initialize the memory it allocates, while get_zeroed_page() initializes the memory to all zeroes.
+* Memory location: kmalloc() can allocate memory from the kernel's "slab cache" or from the "buddy allocator". get_zeroed_page() always allocates memory from the buddy allocator.
+* Memory type: kmalloc() and get_zeroed_page() allocate memory that is suitable for general-purpose use by the kernel. If you need memory with specific attributes (e.g., non-cacheable or write-combining), you may need to use a different memory allocation function.
+
+EPT paging structure必须是物理连续的空间，因此坚决不能使用vmalloc分配内存。
+
+Slab allocator VS Buddy allocator:
+
+* Slab allocator is a memory management technique used in the Linux kernel to efficiently allocate and deallocate small objects of a fixed size. It works by dividing memory into small chunks, known as slabs, each of which is of a fixed size and can hold a specific type of object. When an object is allocated, it is taken from a pre-allocated slab of memory. When the object is freed, it is returned to the slab for later use. This helps to reduce fragmentation and improve performance, as it avoids the need for repeated allocations and deallocations of small objects.
+* Buddy allocator, on the other hand, is a memory management technique used to allocate and deallocate large blocks of memory. It works by dividing memory into blocks of a power of two size, and keeping track of which blocks are free and which are in use. When a block of memory is allocated, it is split into two equal-sized buddies, and the process is repeated until a block of the desired size is obtained. When a block is freed, the allocator checks if its buddy is also free, and if so, the two buddies are combined into a larger block.
+
 ## EPT
 
-
-
+EPT paging structure必须是物理连续的空间，因此坚决不能使用vmalloc分配内存。
 
 * VOL3 29.3 THE EXTENDED PAGE TABLE MECHANISM (EPT)
 * Section 29.3.1 gives an overview of EPT.

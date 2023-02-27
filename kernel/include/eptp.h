@@ -81,8 +81,8 @@ typedef union _EPTP
 		u64 DirtyAndAceessEnabled : 1;	   // bit 6  (Setting this control to 1 enables accessed and dirty flags for EPT)
 		u64 EnforcementOfAccessRights : 1; // bit 7 (Setting this control to 1 enables enforcement of EPT access rights), section 29.3.3.2
 		u64 Reserved1 : 4;				   // bit 11:7
-		u64 PML4PhysialAddress : 33;	   // the physical address (have divided by PAGE_SIZE) of the 4-KByte aligned EPT PML4 table.
-		u64 Reserved2 : 19;
+		u64 PML4PhysialAddress : 36;	   // the physical address (have divided by PAGE_SIZE) of the 4-KByte aligned EPT PML4 table.
+		u64 Reserved2 : 16;
 	} Fields;
 } EPTP, *PEPTP;
 
@@ -102,8 +102,8 @@ typedef union _EPT_PML4E
 		u64 Ignored1 : 1;			// bit 9
 		u64 ExecuteForUserMode : 1; // bit 10
 		u64 Ignored2 : 1;			// bit 11
-		u64 PhysicalAddress : 33;	// bit (MAXPHYADDR-1):12 or Page-Frame-Number
-		u64 Reserved2 : 7;			// bit 51:MAXPHYADDR, MAXPHYADDR is 45
+		u64 PhysicalAddress : 36;	// bit (MAXPHYADDR-1):12 or Page-Frame-Number
+		u64 Reserved2 : 4;			// bit 51:MAXPHYADDR, MAXPHYADDR is 45
 		u64 Ignored3 : 12;			// bit 63:52
 	} Fields;
 } EPT_PML4E, *PEPT_PML4E;
@@ -137,8 +137,8 @@ typedef union _EPT_PDPTE
 		// controlled by this entry. If that control is 0, this bit is ignored.
 		u64 ExecuteForUserMode : 1; // bit 10
 		u64 Ignored2 : 1;			// bit 11
-		u64 PhysicalAddress : 33;	// bit (N-1):12 or Page-Frame-Number
-		u64 Reserved2 : 7;			// bit 51:N
+		u64 PhysicalAddress : 36;	// bit (N-1):12 or Page-Frame-Number
+		u64 Reserved2 : 4;			// bit 51:N
 		u64 Ignored3 : 12;			// bit 63:52
 	} Fields;
 } EPT_PDPTE, *PEPT_PDPTE;
@@ -157,8 +157,8 @@ typedef union _EPT_PDE
 		u64 Ignored1 : 1;			// bit 9
 		u64 ExecuteForUserMode : 1; // bit 10
 		u64 Ignored2 : 1;			// bit 11
-		u64 PhysicalAddress : 33;	// bit (N-1):12 or Page-Frame-Number
-		u64 Reserved2 : 7;			// bit 51:N
+		u64 PhysicalAddress : 36;	// bit (N-1):12 or Page-Frame-Number
+		u64 Reserved2 : 4;			// bit 51:N
 		u64 Ignored3 : 12;			// bit 63:52
 	} Fields;
 } EPT_PDE, *PEPT_PDE;
@@ -254,8 +254,8 @@ typedef union
 		/**
 		 * [Bits 44:21] Physical address of 4-KByte aligned EPT page-directory-pointer table referenced by this entry.
 		 */
-		u64 PageFrameNumber : 24; // the physical address should be shift right 21 bits
-		u64 Reserved2 : 12;		  // bit 56:45
+		u64 PageFrameNumber : 27; // the physical address should be shift right 21 bits
+		u64 Reserved2 : 9;		  // bit 56:45
 
 		// 		 If the “guest-paging verification” VM-execution control is 1, indicates limits on the guest paging
 		// structures used to access the 2-MByte page controlled by this entry (see Section 29.3.3.2). If that control is 0, this

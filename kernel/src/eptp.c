@@ -3,7 +3,6 @@
 #include "../include/eptp.h"
 #include <linux/memory.h>
 #include "../include/cpu_features.h"
-#include <linux/vmalloc.h> // defined vmalloc
 #include <linux/slab.h>    // defined kmalloc
 #include "../include/vmx.h"
 #include "../include/vmcall.h"
@@ -173,7 +172,7 @@ void destoryEPTPageTable(PVMM_EPT_PAGE_TABLE table)
     // TODO there must be more detail to do
     if (table)
     {
-        vfree(table);
+        kfree(table);
     }
 }
 
@@ -195,11 +194,18 @@ void destoryEPT2(PEPT_STATE ept_state)
  */
 void EptSetupPML2Entry(PEPT_STATE ept_state, PEPT_PML2_ENTRY pml2_entry, u32 PageFrameNumber)
 {
-    pml2_entry->PageFrameNumber = PageFrameNumber; // 这里并没有实际分配页面，因此不需要设置PageFrameNumber
+
+    //   Each of the 512 collections of 512 PML2 entries is setup here.
+    //   This will, in total, identity map every physical address from 0x0 to physical address 0x8000000000 (512GB of memory)
 
     // ((EntryGroupIndex * VMM_EPT_PML2E_COUNT) + EntryIndex) * 2MB is the actual physical address we're mapping
 
-    u32 address_of_page = PageFrameNumber * SIZE_2_MB;
+    // pml2_entry->PageFrameNumber = PageFrameNumber; // 这里并没有实际分配页面，因此不需要设置PageFrameNumber
+    pml2_entry->PageFrameNumber = 0;
+
+    // ((EntryGroupIndex * VMM_EPT_PML2E_COUNT) + EntryIndex) * 2MB is the actual physical address we're mapping
+
+    u64 address_of_page = PageFrameNumber * SIZE_2_MB;
     // to be safe, we map the first page as UC as to not bring up any kind
     // of undefined behavior from the fixed MTRR section which we are not
     // formally recognizing (typically there is MMIO memory in the first MB).
@@ -208,6 +214,7 @@ void EptSetupPML2Entry(PEPT_STATE ept_state, PEPT_PML2_ENTRY pml2_entry, u32 Pag
     if (PageFrameNumber == 0)
     {
         pml2_entry->MemoryType = MEMORY_TYPE_UNCACHEABLE;
+        return;
     }
 
     u32 TargetMemoryType = MEMORY_TYPE_WRITE_BACK;
@@ -235,7 +242,8 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
     EPT_PML3_POINTER pml3_rwx_template = {0};
     EPT_PML2_ENTRY pml2_entry_template = {0};
 
-    page_table = vmalloc(sizeof(VMM_EPT_PAGE_TABLE) / PAGE_SIZE * PAGE_SIZE);
+    // must use kmalloc for contiguous physical memory
+    page_table = kmalloc(sizeof(VMM_EPT_PAGE_TABLE) / PAGE_SIZE * PAGE_SIZE, GFP_KERNEL);
     if (!page_table)
     {
         LOG_ERR("Failed to allocate memory for EPT page table");
@@ -246,6 +254,10 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
     isPageAligned(&page_table->PML4[0]);
     isPageAligned(&page_table->PML3[0]);
     isPageAligned(&page_table->PML2[0]);
+
+    isPageAligned(__pa(&page_table->PML4[0]));
+    isPageAligned(__pa(&page_table->PML3[0]));
+    isPageAligned(__pa(&page_table->PML2[0]));
 
     INIT_LIST_HEAD(&page_table->DynamicSplitList);
 
@@ -279,8 +291,7 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
         for (int j = 0; j < VMM_EPT_PML2E_COUNT; j++)
         {
             page_table->PML2[i][j] = pml2_entry_template;
-            // page_table->PML2[i][j].Fields.PhysicalAddress = (i * VMM_EPT_PML2E_COUNT + j) * 512;
-            EptSetupPML2Entry(ept_state, &page_table->PML2[i][j], (i * VMM_EPT_PML2E_COUNT + j) * 512);
+            EptSetupPML2Entry(ept_state, &page_table->PML2[i][j], (i * VMM_EPT_PML2E_COUNT + j));
         }
     }
 
@@ -349,7 +360,7 @@ PEPT_STATE initEPT2(void)
     eptp.Fields.PageWalkLength = 3;
 
     // The physical page number of the page table we will be using
-    eptp.Fields.PML4PhysialAddress = (u32)(__pa(&PageTable->PML4[0]) / PAGE_SIZE);
+    eptp.Fields.PML4PhysialAddress = (__pa(&PageTable->PML4[0]) / PAGE_SIZE);
 
     // We will write the EPTP to the VMCS later
     EptState->EptPointer = eptp;
@@ -372,12 +383,10 @@ PEPT_STATE initEPT(void)
     memset(EptState, 0, sizeof(EPT_STATE));
 
     PEPTP ept_pointer = &EptState->EptPointer; // each is PAGE_SIZE
-    PEPT_PML4E pml4e = NULL;  // each is PAGE_SIZE
-    PEPT_PDPTE pdpte = NULL;  // each is PAGE_SIZE
-    PEPT_PDE pde = NULL;      // each is PAGE_SIZE
-    PEPT_PTE pte = NULL;      // each is PAGE_SIZE
-
-
+    PEPT_PML4E pml4e = NULL;                   // each is PAGE_SIZE
+    PEPT_PDPTE pdpte = NULL;                   // each is PAGE_SIZE
+    PEPT_PDE pde = NULL;                       // each is PAGE_SIZE
+    PEPT_PTE pte = NULL;                       // each is PAGE_SIZE
 
     isPageAligned(ept_pointer);
 
@@ -433,7 +442,6 @@ PEPT_STATE initEPT(void)
 ERR:
     destoryEPT(EptState);
     return NULL;
-
 }
 
 /**
@@ -635,7 +643,7 @@ bool eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     pml2_pointer.Fields.Write = 1;
     pml2_pointer.Fields.Read = 1;
     pml2_pointer.Fields.Execute = 1;
-    pml2_pointer.Fields.PhysicalAddress = __pa(new_split->PML1) >> 12;
+    pml2_pointer.Fields.PhysicalAddress = __pa(&new_split->PML1[0]) >> 12;
 
     // insert
     list_add(&EptPageTable->DynamicSplitList, &new_split->DynamicSplitList);
@@ -739,31 +747,30 @@ bool eptPageHook(void *TargetFunc, bool has_launched)
     return false;
 }
 
-
 int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification, u64 guest_phy_addr)
 {
-    switch(ExitQualification)
+    switch (ExitQualification)
     {
-        case 0:
-        {
-            LOG_INFO("EPT Violation: Read access\n");
-            break;
-        }
-        case 1:
-        {
-            LOG_INFO("EPT Violation: Write access\n");
-            break;
-        }
-        case 2:
-        {
-            LOG_INFO("EPT Violation: instruction fetch\n");
-            break;
-        }
-        default:
-        {
-            LOG_INFO("EPT Violation: Unknown access\n");
-            break;
-        }
+    case 0:
+    {
+        LOG_INFO("EPT Violation: Read access\n");
+        break;
+    }
+    case 1:
+    {
+        LOG_INFO("EPT Violation: Write access\n");
+        break;
+    }
+    case 2:
+    {
+        LOG_INFO("EPT Violation: instruction fetch\n");
+        break;
+    }
+    default:
+    {
+        LOG_INFO("EPT Violation: Unknown access\n");
+        break;
+    }
     }
 
     return 0;

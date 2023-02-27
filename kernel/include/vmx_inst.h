@@ -153,17 +153,17 @@ static __always_inline int parseRflagForVmxOperation(void)
     RFLAGs rf = get_rflags();
     if (rf.Fields.CF)
     {
-        LOG_INFO("VMfailInvalid");
+        // LOG_INFO("VMfailInvalid");
         return -1;
     }
     else if (rf.Fields.ZF)
     {
-        LOG_INFO("VMfailValid");
+        // LOG_INFO("VMfailValid");
         return -1;
     }
     else
     {
-        LOG_INFO("VMsuccess");
+        // LOG_INFO("VMsuccess");
         return 0;
     }
 }
