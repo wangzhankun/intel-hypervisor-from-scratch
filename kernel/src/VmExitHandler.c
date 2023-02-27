@@ -1,6 +1,8 @@
 #include "../include/global.h"
 #include "../include/vmx_inst.h"
 #include "../include/vmx.h"
+#include "../include/vmcall.h"
+
 #define HYPERV_CPUID_VENDOR_AND_MAX_FUNCTIONS 0x40000000
 #define HYPERV_CPUID_INTERFACE 0x40000001
 #define HYPERV_CPUID_VERSION 0x40000002
@@ -12,15 +14,15 @@
 #define HYPERV_CPUID_MIN 0x40000005
 #define HYPERV_CPUID_MAX 0x4000ffff
 
+
+
+
 // uint64_t g_guest_rsp = 0, g_guest_rip = 0;
 extern uint64_t g_stack_pointer_for_returning;
 extern uint64_t g_base_pointer_for_returning;
-extern VIRTUAL_MACHINE_STATE *g_guest_state;
-
-extern void test_vmcall0(void);
-extern void test_vmcall1(int param1);
-extern void test_vmcall2(int param1, int param2);
-extern void test_vmcall3(int param1, int param2, int param3);
+extern VIRTUAL_MACHINE_STATE g_guest_state[];
+extern bool eptVmxRootModePageHook(void* target_func, bool has_launched);
+extern int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification, u64 guest_phy_addr);//defined in eptp.c
 
 /**
  * @brief handle CPUID instruction
@@ -294,28 +296,13 @@ void handleVmcall(PGUEST_REGS GuestRegs)
     u64 vmcall_code = GuestRegs->rdi;
     switch (vmcall_code)
     {
-    case 0:
+    case VMCALL_EXEC_HOOK_PAGE:
     {
-        test_vmcall0();
-        break;
-    }
-    case 1:
-    {
-        test_vmcall1(GuestRegs->rsi);
-        break;
-    }
-    case 2:
-    {
-        test_vmcall2(GuestRegs->rsi, GuestRegs->rdx);
-        break;
-    }
-    case 3:
-    {
-        test_vmcall3(GuestRegs->rsi, GuestRegs->rdx, GuestRegs->rcx);
+        eptVmxRootModePageHook(GuestRegs->rsi, true);
         break;
     }
     default:
-        BREAKPOINT();
+        // BREAKPOINT();
         break;
     }
 }
@@ -339,34 +326,7 @@ void VmResumeInstruction(void)
     // BREAKPOINT();
 }
 
-int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification)
-{
-    switch(ExitQualification)
-    {
-        case 0:
-        {
-            LOG_INFO("EPT Violation: Read access\n");
-            break;
-        }
-        case 1:
-        {
-            LOG_INFO("EPT Violation: Write access\n");
-            break;
-        }
-        case 2:
-        {
-            LOG_INFO("EPT Violation: instruction fetch\n");
-            break;
-        }
-        default:
-        {
-            LOG_INFO("EPT Violation: Unknown access\n");
-            break;
-        }
-    }
 
-    return 0;
-}
 
 #define vmreadError(ret)                      \
     {                                         \
@@ -486,7 +446,9 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
 
     case EXIT_REASON_EPT_VIOLATION:
     {
-        status = handleEPTViolation(GuestRegs, ExitQualification);
+        u64 guest_phy_addr = 0;
+        vmread(GUEST_PHYSICAL_ADDRESS, &guest_phy_addr);
+        status = handleEPTViolation(GuestRegs, ExitQualification, guest_phy_addr);
 
         break;
     }

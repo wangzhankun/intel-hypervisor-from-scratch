@@ -6,6 +6,8 @@
 #include <linux/kgdb.h> // for kgdb_breakpoint()
 #include "./types.h"
 
+#define PAGE_MASK           (~(PAGE_SIZE - 1))
+#define PAGE_ALIGN(addr)    (((u64)(addr) + PAGE_SIZE - 1) & PAGE_MASK)
 
 #define MODULENAME "myhypervisor"
 
@@ -24,11 +26,11 @@
 #define isPageAligned(addr) \
     if(((uint64_t)(addr) & (uint64_t)(PAGE_SIZE - 1)) != 0)\
     {\
-        LOG_ERR("Address of %s is not page aligned: %p", #addr, addr);\
+        LOG_ERR("Address of %s is not page aligned: 0x%llx", #addr, addr);\
     }\
     else\
     {\
-        LOG_INFO("Address of %s is page aligned: %p", #addr, addr);\
+        LOG_INFO("Address of %s is page aligned: 0x%llx", #addr, addr);\
     }
 
 // #define LOG_INFO(fmt, ...) printk(KERN_INFO fmt, ##__VA_ARGS__)

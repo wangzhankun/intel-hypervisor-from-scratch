@@ -184,6 +184,126 @@ typedef union
 } MSR_MTRR_DEF_TYPE_BITS;
 
 
+typedef union
+{
+	struct
+	{
+		/**
+		 * [Bit 0] When set to 1, the processor supports execute-only translations by EPT. This support allows software to
+		 * configure EPT paging-structure entries in which bits 1:0 are clear (indicating that data accesses are not allowed) and
+		 * bit 2 is set (indicating that instruction fetches are allowed).
+		 */
+		u64 ExecuteOnlyPages : 1;
+		u64 Reserved1 : 5;
+
+		/**
+		 * [Bit 6] Indicates support for a page-walk length of 4.
+		 */
+		u64 PageWalkLength4 : 1;
+		u64 Reserved2 : 1;
+
+		/**
+		 * [Bit 8] When set to 1, the logical processor allows software to configure the EPT paging-structure memory type to be
+		 * uncacheable (UC).
+		 *
+		 * @see Vol3C[24.6.11(Extended-Page-Table Pointer (EPTP))]
+		 */
+		u64 MemoryTypeUncacheable : 1;
+		u64 Reserved3 : 5;
+
+		/**
+		 * [Bit 14] When set to 1, the logical processor allows software to configure the EPT paging-structure memory type to be
+		 * write-back (WB).
+		 */
+		u64 MemoryTypeWriteBack : 1;
+		u64 Reserved4 : 1;
+
+		/**
+		 * [Bit 16] When set to 1, the logical processor allows software to configure a EPT PDE to map a 2-Mbyte page (by setting
+		 * bit 7 in the EPT PDE).
+		 */
+		u64 Pde2MbPages : 1;
+
+		/**
+		 * [Bit 17] When set to 1, the logical processor allows software to configure a EPT PDPTE to map a 1-Gbyte page (by setting
+		 * bit 7 in the EPT PDPTE).
+		 */
+		u64 Pdpte1GbPages : 1;
+		u64 Reserved5 : 2;
+
+		/**
+		 * [Bit 20] If bit 20 is read as 1, the INVEPT instruction is supported.
+		 *
+		 * @see Vol3C[30(VMX INSTRUCTION REFERENCE)]
+		 * @see Vol3C[28.3.3.1(Operations that Invalidate Cached Mappings)]
+		 */
+		u64 Invept : 1;
+
+		/**
+		 * [Bit 21] When set to 1, accessed and dirty flags for EPT are supported.
+		 *
+		 * @see Vol3C[28.2.4(Accessed and Dirty Flags for EPT)]
+		 */
+		u64 EptAccessedAndDirtyFlags : 1;
+
+		/**
+		 * [Bit 22] When set to 1, the processor reports advanced VM-exit information for EPT violations. This reporting is done
+		 * only if this bit is read as 1.
+		 *
+		 * @see Vol3C[27.2.1(Basic VM-Exit Information)]
+		 */
+		u64 AdvancedVmexitEptViolationsInformation : 1;
+		u64 Reserved6 : 2;
+
+		/**
+		 * [Bit 25] When set to 1, the single-context INVEPT type is supported.
+		 *
+		 * @see Vol3C[30(VMX INSTRUCTION REFERENCE)]
+		 * @see Vol3C[28.3.3.1(Operations that Invalidate Cached Mappings)]
+		 */
+		u64 InveptSingleContext : 1;
+
+		/**
+		 * [Bit 26] When set to 1, the all-context INVEPT type is supported.
+		 *
+		 * @see Vol3C[30(VMX INSTRUCTION REFERENCE)]
+		 * @see Vol3C[28.3.3.1(Operations that Invalidate Cached Mappings)]
+		 */
+		u64 InveptAllContexts : 1;
+		u64 Reserved7 : 5;
+
+		/**
+		 * [Bit 32] When set to 1, the INVVPID instruction is supported.
+		 */
+		u64 Invvpid : 1;
+		u64 Reserved8 : 7;
+
+		/**
+		 * [Bit 40] When set to 1, the individual-address INVVPID type is supported.
+		 */
+		u64 InvvpidIndividualAddress : 1;
+
+		/**
+		 * [Bit 41] When set to 1, the single-context INVVPID type is supported.
+		 */
+		u64 InvvpidSingleContext : 1;
+
+		/**
+		 * [Bit 42] When set to 1, the all-context INVVPID type is supported.
+		 */
+		u64 InvvpidAllContexts : 1;
+
+		/**
+		 * [Bit 43] When set to 1, the single-context-retaining-globals INVVPID type is supported.
+		 */
+		u64 InvvpidSingleContextRetainGlobals : 1;
+		u64 Reserved9 : 20;
+	}Fields;
+
+	u64 All;
+} MSR_VMX_EPT_VPID_CAP_BITS, * PMSR_VMX_EPT_VPID_CAP_BITS;
+
+
 static inline uint64_t hyper_rdmsr(uint32_t msr)
 {
 	uint32_t a, d;

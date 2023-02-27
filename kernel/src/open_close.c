@@ -3,14 +3,20 @@
 // #include <asm/special_insns.h>
 #include "../include/utils.h"
 #include "../include/vmx.h"
-extern PEPT_STATE g_ept_state;
+#include <linux/slab.h>
+
+static PEPT_STATE ept_state = NULL;
+
 // open
 int hyper_open(struct inode *inode, struct file *file)
 {
     BREAKPOINT();
 
     LOG_INFO("hyper_open");
-    if (initVMX())
+
+
+    ept_state = initVMX();
+    if (NULL != ept_state)
     {
         LOG_INFO("init vmx operation success");
     }
@@ -20,7 +26,7 @@ int hyper_open(struct inode *inode, struct file *file)
         return -1;
     }
 
-    launchVm(1, g_ept_state);
+    launchVm(ept_state);
 
     return 0;
 }
@@ -28,8 +34,8 @@ int hyper_open(struct inode *inode, struct file *file)
 int hyper_close(struct inode *inode, struct file *file)
 {
     LOG_INFO("hyper_close");
-    // exitVm(1, g_eptp); //TODO
-    exitVMX();
+    // exitVm(ept_state); //TODO
+    // exitVMX(ept_state);
 
     LOG_INFO("disable vmx operation success");
     return 0;

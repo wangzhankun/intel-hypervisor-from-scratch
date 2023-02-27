@@ -5,7 +5,15 @@
 #include "../include/cpu_features.h"
 #include <linux/vmalloc.h> // defined vmalloc
 #include <linux/slab.h>    // defined kmalloc
+#include "../include/vmx.h"
+#include "../include/vmcall.h"
+
 uint64_t g_virtual_guest_memory_address = 0;
+extern VIRTUAL_MACHINE_STATE g_guest_state[]; // defined in vmx.c
+extern PEPT_STATE g_ept_state;                // defined in vmx.c
+
+bool eptPageHook(void *TargetFunc, bool has_launched);
+extern int eptInvept(uint64_t invept_type, void *desc);
 
 void initEPT_PML4E(PEPT_PML4E pml4e, PEPT_PDPTE pdpte)
 {
@@ -106,61 +114,53 @@ void destoryEPT_PTE(PEPT_PTE pte)
     }
 }
 
-void destoryEPT(PEPTP ept_pointer)
+void destoryEPT(PEPT_STATE ept_state)
 {
-    LOG_INFO("Destorying EPT, EPTP: %p\n", ept_pointer);
-    if (ept_pointer)
+    if (NULL != ept_state && 0 != ept_state->EptPointer.All)
     {
-        for (PEPTP p_ept_pointer = ept_pointer;
-             p_ept_pointer < ept_pointer + PAGE_SIZE && p_ept_pointer->Fields.PML4PhysialAddress;
-             p_ept_pointer++)
+        PEPT_PML4E pml4e = (PEPT_PML4E)(__va(ept_state->EptPointer.Fields.PML4PhysialAddress << 12));
+        // LOG_INFO("eptp is %p, pml4e is %p\n", p_ept_pointer, pml4e);
+        if (pml4e)
         {
-            PEPT_PML4E pml4e = (PEPT_PML4E)(__va(p_ept_pointer->Fields.PML4PhysialAddress << 12));
-            // LOG_INFO("eptp is %p, pml4e is %p\n", p_ept_pointer, pml4e);
-            if (pml4e)
+            for (PEPT_PML4E p_pml4e = pml4e;
+                 p_pml4e < pml4e + PAGE_SIZE && p_pml4e->Fields.PhysicalAddress;
+                 p_pml4e++)
             {
-                for (PEPT_PML4E p_pml4e = pml4e;
-                     p_pml4e < pml4e + PAGE_SIZE && p_pml4e->Fields.PhysicalAddress;
-                     p_pml4e++)
+                PEPT_PDPTE pdpte = (PEPT_PDPTE)(__va(p_pml4e->Fields.PhysicalAddress << 12));
+                // LOG_INFO("pml4e is %p, pdpte is %p\n", p_pml4e, pdpte);
+                if (pdpte)
                 {
-                    PEPT_PDPTE pdpte = (PEPT_PDPTE)(__va(p_pml4e->Fields.PhysicalAddress << 12));
-                    // LOG_INFO("pml4e is %p, pdpte is %p\n", p_pml4e, pdpte);
-                    if (pdpte)
+                    for (PEPT_PDPTE p_pdpte = pdpte;
+                         p_pdpte < pdpte + PAGE_SIZE && p_pdpte->Fields.PhysicalAddress;
+                         p_pdpte++)
                     {
-                        for (PEPT_PDPTE p_pdpte = pdpte;
-                             p_pdpte < pdpte + PAGE_SIZE && p_pdpte->Fields.PhysicalAddress;
-                             p_pdpte++)
+                        PEPT_PDE pde = (PEPT_PDE)(__va(p_pdpte->Fields.PhysicalAddress << 12));
+                        // LOG_INFO("pdpte is %p, pde is %p\n", p_pdpte, pde);
+                        if (pde)
                         {
-                            PEPT_PDE pde = (PEPT_PDE)(__va(p_pdpte->Fields.PhysicalAddress << 12));
-                            // LOG_INFO("pdpte is %p, pde is %p\n", p_pdpte, pde);
-                            if (pde)
+                            PEPT_PTE pte = (PEPT_PTE)(__va(pde->Fields.PhysicalAddress << 12));
+                            if (pte)
                             {
-                                PEPT_PTE pte = (PEPT_PTE)(__va(pde->Fields.PhysicalAddress << 12));
-                                if (pte)
-                                {
-                                    destoryEPT_PTE(pte);
+                                destoryEPT_PTE(pte);
 
-                                    memset(pte, 0, PAGE_SIZE);
-                                    free_page((unsigned long)pte);
-                                }
-
-                                memset(pde, 0, PAGE_SIZE);
-                                free_page((unsigned long)pde);
+                                memset(pte, 0, PAGE_SIZE);
+                                free_page((unsigned long)pte);
                             }
+
+                            memset(pde, 0, PAGE_SIZE);
+                            free_page((unsigned long)pde);
                         }
-
-                        memset(pdpte, 0, PAGE_SIZE);
-                        free_page((unsigned long)pdpte);
                     }
+
+                    memset(pdpte, 0, PAGE_SIZE);
+                    free_page((unsigned long)pdpte);
                 }
-
-                memset(pml4e, 0, PAGE_SIZE);
-                free_page((unsigned long)pml4e);
             }
-        }
 
-        memset(ept_pointer, 0, PAGE_SIZE);
-        free_page((unsigned long)ept_pointer);
+            memset(pml4e, 0, PAGE_SIZE);
+            free_page((unsigned long)pml4e);
+        }
+        kfree(ept_state);
     }
 
     LOG_INFO("EPT destoryed\n");
@@ -183,12 +183,19 @@ void destoryEPT2(PEPT_STATE ept_state)
     {
         destoryEPTPageTable(ept_state->EptPageTable);
         kfree(ept_state);
+        // free_page((unsigned long)ept_state);
     }
 }
 
+/**
+ * @brief 设置EPT PML2E 这里的并没有实际分配物理页面，因此无法记录PageFrameNumber。
+ * 这里的主要目的是设置为页面设置基本属性，默认页面缓存属性是WriteBack。
+ * 如果第一个页面的话，需要设计成Uncacheable，因为这个页面可能是MMIO。
+ * 同时缓存属性要根据MTRR进行设计。
+ */
 void EptSetupPML2Entry(PEPT_STATE ept_state, PEPT_PML2_ENTRY pml2_entry, u32 PageFrameNumber)
 {
-    pml2_entry->PageFrameNumber = PageFrameNumber;
+    pml2_entry->PageFrameNumber = PageFrameNumber; // 这里并没有实际分配页面，因此不需要设置PageFrameNumber
 
     // ((EntryGroupIndex * VMM_EPT_PML2E_COUNT) + EntryIndex) * 2MB is the actual physical address we're mapping
 
@@ -236,6 +243,10 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
     }
     memset(page_table, 0, sizeof(VMM_EPT_PAGE_TABLE));
 
+    isPageAligned(&page_table->PML4[0]);
+    isPageAligned(&page_table->PML3[0]);
+    isPageAligned(&page_table->PML2[0]);
+
     INIT_LIST_HEAD(&page_table->DynamicSplitList);
 
     // eanch PML4 entry covers 512 GB, so one entry is more than enough
@@ -280,8 +291,13 @@ ERR:
     return NULL;
 }
 
+/**
+ * @brief must build MTRR before init EPT
+ */
 PEPT_STATE initEPT2(void)
 {
+    LOG_INFO("Initializing EPT");
+    // PEPT_STATE EptState = get_zeroed_page(GFP_KERNEL);
     PEPT_STATE EptState = (PEPT_STATE)kmalloc(sizeof(EPT_STATE), GFP_KERNEL);
     if (!EptState)
     {
@@ -289,6 +305,22 @@ PEPT_STATE initEPT2(void)
         goto ERR;
     }
     memset(EptState, 0, sizeof(EPT_STATE));
+
+    if (isSupportedMTRRAndEPT() == false)
+    {
+        LOG_ERR("MTRR is not supported");
+        goto ERR;
+    }
+    else
+    {
+        LOG_INFO("MTRR is supported");
+        if (!eptBuildMtrrMap(EptState))
+        {
+            LOG_ERR("Failed to build MTRR map");
+            goto ERR;
+        }
+        LOG_INFO("MTRR map is built");
+    }
 
     EPTP eptp = {0};
     PVMM_EPT_PAGE_TABLE PageTable;
@@ -317,30 +349,35 @@ PEPT_STATE initEPT2(void)
     eptp.Fields.PageWalkLength = 3;
 
     // The physical page number of the page table we will be using
-    eptp.Fields.PML4PhysialAddress = (u32)(__pa(&PageTable->PML4) / PAGE_SIZE);
+    eptp.Fields.PML4PhysialAddress = (u32)(__pa(&PageTable->PML4[0]) / PAGE_SIZE);
 
     // We will write the EPTP to the VMCS later
     EptState->EptPointer = eptp;
+
     return EptState;
 ERR:
     destoryEPT2(EptState);
     return NULL;
 }
 
-PEPTP initEPT(void)
+PEPT_STATE initEPT(void)
 {
-    PEPTP ept_pointer = NULL; // each is PAGE_SIZE
+    LOG_INFO("Initializing EPT");
+    PEPT_STATE EptState = (PEPT_STATE)kmalloc(sizeof(EPT_STATE), GFP_KERNEL);
+    if (!EptState)
+    {
+        LOG_ERR("Failed to allocate memory for EPT state");
+        goto ERR;
+    }
+    memset(EptState, 0, sizeof(EPT_STATE));
+
+    PEPTP ept_pointer = &EptState->EptPointer; // each is PAGE_SIZE
     PEPT_PML4E pml4e = NULL;  // each is PAGE_SIZE
     PEPT_PDPTE pdpte = NULL;  // each is PAGE_SIZE
     PEPT_PDE pde = NULL;      // each is PAGE_SIZE
     PEPT_PTE pte = NULL;      // each is PAGE_SIZE
 
-    ept_pointer = get_zeroed_page(GFP_KERNEL);
-    if (!ept_pointer)
-    {
-        LOG_ERR("Failed to allocate memory for EPT pointer");
-        goto ERR;
-    }
+
 
     isPageAligned(ept_pointer);
 
@@ -382,7 +419,7 @@ PEPTP initEPT(void)
     initEPT_PDPT(pdpte, pde);
     initEPT_PML4E(pml4e, pdpte);
 
-    ept_pointer->Fields.DirtyAndAceessEnabled = 1;
+    ept_pointer->Fields.DirtyAndAceessEnabled = 0;
     ept_pointer->Fields.MemoryType = 6;     // 6 = Write-back (WB)
     ept_pointer->Fields.PageWalkLength = 3; // 4 (tables walked) - 1 = 3
     ept_pointer->Fields.PML4PhysialAddress = __pa((void *)pml4e) >> 12;
@@ -391,13 +428,12 @@ PEPTP initEPT(void)
 
     LOG_INFO("EPT pointer: 0x%llx", ept_pointer->All);
 
-    goto FINAL;
+    return EptState;
+
 ERR:
-    destoryEPT(ept_pointer);
+    destoryEPT(EptState);
     return NULL;
 
-FINAL:
-    return ept_pointer;
 }
 
 /**
@@ -426,9 +462,6 @@ bool eptBuildMtrrMap(EPT_STATE *ept_state)
     // The first entry in each pair (IA32_MTRR_PHYSBASEn) defines the base address and memory type for the range;
     // the second entry (IA32_MTRR_PHYSMASKn) contains a mask used to determine the address range. The “n” suffix
     // is in the range 0 through m–1 and identifies a specific register pair.
-
-    if (!isSupportedMTRR())
-        return false;
 
     // VOL3 Figure 12-7. IA32_MTRR_PHYSBASEn and IA32_MTRR_PHYSMASKn Variable-Range Register Pair
     // MAXPHYADDR: The bit position indicated by MAXPHYADDR depends on the maximum
@@ -505,4 +538,233 @@ bool eptBuildMtrrMap(EPT_STATE *ept_state)
     LOG_INFO("Number of enabled memory ranges: %d", ept_state->NumberOfEnabledMemoryRanges);
 
     return true;
+}
+
+// Index of the 1st paging structure (4096 byte)
+#define ADDRMASK_EPT_PML1_INDEX(_VAR_) ((_VAR_ & 0x1FF000ULL) >> 12)
+
+// Index of the 2nd paging structure (2MB)
+#define ADDRMASK_EPT_PML2_INDEX(_VAR_) ((_VAR_ & 0x3FE00000ULL) >> 21)
+
+// Index of the 3rd paging structure (1GB)
+#define ADDRMASK_EPT_PML3_INDEX(_VAR_) ((_VAR_ & 0x7FC0000000ULL) >> 30)
+
+// Index of the 4th paging structure (512GB)
+#define ADDRMASK_EPT_PML4_INDEX(_VAR_) ((_VAR_ & 0xFF8000000000ULL) >> 39)
+
+PEPT_PML2_ENTRY eptGetPml2Entry(PVMM_EPT_PAGE_TABLE EptPageTable, u64 guest_physical_address)
+{
+    u64 directory = ADDRMASK_EPT_PML2_INDEX(guest_physical_address);
+    u64 directory_pointer = ADDRMASK_EPT_PML3_INDEX(guest_physical_address);
+    u64 pml4entry = ADDRMASK_EPT_PML4_INDEX(guest_physical_address);
+    if (pml4entry > 0)
+    {
+        return NULL;
+    }
+    return &EptPageTable->PML2[directory_pointer][directory];
+}
+
+PEPT_PML1_ENTRY eptGetPml1Entry(PVMM_EPT_PAGE_TABLE EptPageTable, u64 guest_physical_address)
+{
+    PEPT_PML2_ENTRY pml2_entry = eptGetPml2Entry(EptPageTable, guest_physical_address);
+    if (pml2_entry == NULL || pml2_entry->LargePage)
+    {
+        return NULL;
+    }
+
+    PEPT_PML2_POINTER pde = (PEPT_PML2_POINTER)pml2_entry;
+
+    PEPT_PML1_ENTRY pml1 = __va(pde->Fields.PhysicalAddress << 12);
+    if (pml1 == 0)
+    {
+        return NULL;
+    }
+    return &pml1[ADDRMASK_EPT_PML1_INDEX(guest_physical_address)];
+}
+
+bool eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
+                       void *PreAllocatedBuffer,
+                       u64 PhysicalAddres,
+                       u32 cpu)
+{
+    PEPT_PML2_ENTRY target_entry_pml2 = eptGetPml2Entry(EptPageTable, PhysicalAddres);
+
+    if (target_entry_pml2 == NULL)
+    {
+        LOG_ERR("target_entry_pml2 is NULL");
+        return false;
+    }
+
+    // If this large page is not marked a large page, that means it's a pointer already.
+    // That page is therefore already split.
+    if (!target_entry_pml2->LargePage)
+    {
+        return true;
+    }
+
+    // free previous buffer
+    g_guest_state[cpu].PreAllocatedMemoryDetails.PreAllocatedBuffer = NULL;
+
+    // Allocate PML1 entries
+    PVMM_EPT_DYNAMIC_SPLIT new_split = (PVMM_EPT_DYNAMIC_SPLIT)PreAllocatedBuffer;
+    if (new_split == NULL)
+    {
+        LOG_ERR("PreAllocatedBuffer is NULL");
+        return false;
+    }
+    memset(new_split, 0, sizeof(VMM_EPT_DYNAMIC_SPLIT));
+    INIT_LIST_HEAD(&(new_split->DynamicSplitList));
+
+    // Point back to the entry in the dynamic split for easy reference for which entry that dynamic split is for.
+    new_split->Entry = target_entry_pml2;
+
+    EPT_PML1_ENTRY EntryTemplate;
+    EntryTemplate.All = 0;
+    EntryTemplate.Fields.Read = 1;
+    EntryTemplate.Fields.Write = 1;
+    EntryTemplate.Fields.Execute = 1;
+
+    for (int i = 0; i < VMM_EPT_PML1E_COUNT; i++)
+    {
+        new_split->PML1[i].All = EntryTemplate.All;
+        new_split->PML1[i].Fields.PhysicalAddress = (target_entry_pml2->PageFrameNumber * SIZE_2_MB / PAGE_SIZE) + i;
+    }
+
+    EPT_PML2_POINTER pml2_pointer;
+    pml2_pointer.All = 0;
+    pml2_pointer.Fields.Write = 1;
+    pml2_pointer.Fields.Read = 1;
+    pml2_pointer.Fields.Execute = 1;
+    pml2_pointer.Fields.PhysicalAddress = __pa(new_split->PML1) >> 12;
+
+    // insert
+    list_add(&EptPageTable->DynamicSplitList, &new_split->DynamicSplitList);
+
+    target_entry_pml2->All = pml2_pointer.All;
+    return true;
+}
+
+bool eptVmxRootModePageHook(void *target_func, bool has_launched)
+{
+    int cpu = smp_processor_id();
+
+    if (has_launched &&
+        g_guest_state[cpu].IsOnVmxRootMode &&
+        g_guest_state[cpu].PreAllocatedMemoryDetails.PreAllocatedBuffer == NULL)
+    {
+        return false;
+    }
+
+    void *target_virt_addr = PAGE_ALIGN(target_func);
+    u64 target_phy_addr = __pa(target_virt_addr);
+
+    if (!target_phy_addr)
+    {
+        LOG_ERR("target_phy_addr is NULL");
+        return false;
+    }
+
+    void *target_buffer = g_guest_state[cpu].PreAllocatedMemoryDetails.PreAllocatedBuffer;
+
+    if (!eptSplitLargePage(g_ept_state->EptPageTable, target_buffer, target_phy_addr, cpu))
+    {
+        LOG_ERR("eptSplitLargePage failed");
+        return false;
+    }
+
+    PEPT_PML1_ENTRY target_entry_pml1 = eptGetPml1Entry(g_ept_state->EptPageTable, target_phy_addr);
+    if (target_entry_pml1 == NULL)
+    {
+        LOG_ERR("target_entry_pml1 is NULL");
+        return false;
+    }
+
+    EPT_PML1_ENTRY origin_pml1_entry = *target_entry_pml1;
+    //
+    // Lastly, mark the entry in the table as no execute. This will cause the next time that an instruction is
+    // fetched from this page to cause an EPT violation exit. This will allow us to swap in the fake page with our
+    // hook.
+    //
+    origin_pml1_entry.Fields.Write = 1;
+    origin_pml1_entry.Fields.Read = 1;
+    origin_pml1_entry.Fields.Execute = 0;
+
+    target_entry_pml1->All = origin_pml1_entry.All;
+
+    // Invalidate the entry in the TLB caches so it will not conflict with the actual paging structure.
+    if (has_launched)
+    {
+        // Uncomment in order to invalidate all the contexts
+        INVEPT_DESCRIPTOR Descriptor;
+        Descriptor.EptPointer = g_ept_state->EptPointer.All;
+        Descriptor.Reserved = 0;
+        eptInvept(1, &Descriptor);
+    }
+
+    return true;
+}
+
+bool eptPageHook(void *TargetFunc, bool has_launched)
+{
+    int logical_processor_number = smp_processor_id();
+    if (g_guest_state[logical_processor_number].PreAllocatedMemoryDetails.PreAllocatedBuffer == NULL)
+    {
+        void *pre_allocated_buffer = kmalloc(sizeof(VMM_EPT_DYNAMIC_SPLIT), GFP_KERNEL);
+        if (pre_allocated_buffer == NULL)
+        {
+            LOG_ERR("kmalloc failed");
+            return false;
+        }
+        memset(pre_allocated_buffer, 0, sizeof(VMM_EPT_DYNAMIC_SPLIT));
+        // TODO free
+        g_guest_state[logical_processor_number].PreAllocatedMemoryDetails.PreAllocatedBuffer = pre_allocated_buffer;
+    }
+
+    if (has_launched)
+    {
+        vmcall1(VMCALL_EXEC_HOOK_PAGE, TargetFunc);
+        // TODO notify all the other cores to invalidate the EPT
+        // 需要根据返回值进行修改，如果返回值成功了，则需要invalidate
+        // 但是 vmcall 的返回值还没有做
+    }
+    else
+    {
+        if (eptVmxRootModePageHook(TargetFunc, has_launched) == true)
+        {
+            LOG_INFO("[*] Hook applied (VM has not launched)");
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification, u64 guest_phy_addr)
+{
+    switch(ExitQualification)
+    {
+        case 0:
+        {
+            LOG_INFO("EPT Violation: Read access\n");
+            break;
+        }
+        case 1:
+        {
+            LOG_INFO("EPT Violation: Write access\n");
+            break;
+        }
+        case 2:
+        {
+            LOG_INFO("EPT Violation: instruction fetch\n");
+            break;
+        }
+        default:
+        {
+            LOG_INFO("EPT Violation: Unknown access\n");
+            break;
+        }
+    }
+
+    return 0;
 }

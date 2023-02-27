@@ -13,25 +13,3 @@ if it is not already active (see Section 32.15.6).
 
 
 
-void test_vmcall0(void)
-{
-    LOG_INFO("test_vmcall0");
-}
-
-void test_vmcall1(int param1)
-{
-    LOG_INFO("param1 = %d", param1);
-}
-
-void test_vmcall2(int param1, int param2)
-{
-    LOG_INFO("param1 = %d", param1);
-    LOG_INFO("param2 = %d", param2);
-}
-
-void test_vmcall3(int param1, int param2, int param3)
-{
-    LOG_INFO("param1 = %d", param1);
-    LOG_INFO("param2 = %d", param2);
-    LOG_INFO("param3 = %d", param3);
-}

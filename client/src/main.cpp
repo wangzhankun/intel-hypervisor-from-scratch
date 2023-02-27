@@ -19,6 +19,10 @@ void printAppearance()
            "          |___/|_|                                                                                                     \n"
 
            "\n\n");
+    unsigned int eax = 0x80000008, ebx, ecx, edx;
+    __cpuid(0x80000008, eax, ebx, ecx, edx);
+    printf("physical address width that the cpu can support is %d bits\n", eax & 0xff);
+    sleep(1);
 }
 
 int main(int argc, char **argv)

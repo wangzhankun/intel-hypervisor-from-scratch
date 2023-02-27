@@ -4,7 +4,7 @@
 #include "global.h"
 #include "types.h"
 
-bool isSupportedMTRR(void);
+bool isSupportedMTRRAndEPT(void);
 
 bool isSupportedVMX(void);
 

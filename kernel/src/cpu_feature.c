@@ -6,20 +6,13 @@
 #include <asm/msr.h>
 
 
-bool isSupportedMTRR(void)
+bool isSupportedMTRRAndEPT(void)
 {
     // Before attempting reads/writes to MTRRs, 
     // the operating system should first check the availability 
     // of this feature by checking if CPUID.01h:EDX[bit 12] is set.
 
-    // 1. Check CPUID.01h:EDX[bit 12]
-    uint32_t eax = 0, ebx, ecx, edx;
-    __cpuid(&eax, &ebx, &ecx, &edx);
-    if ((edx & (1 << 12)) == 0)
-    {
-        LOG_ERR("MTRR is not supported");
-        return false;
-    }
+
 
 
     MSR_MTRR_DEF_TYPE_BITS msr_def = {0};
@@ -33,6 +26,23 @@ bool isSupportedMTRR(void)
         LOG_INFO("MTRR: MTRR is disabled");
         return false;
     }
+
+
+    MSR_VMX_EPT_VPID_CAP_BITS msr_ept_cap = {0};
+    msr_ept_cap.All = get_msr(MSR_IA32_VMX_EPT_VPID_CAP);
+    if(!msr_ept_cap.Fields.PageWalkLength4 || 
+    !msr_ept_cap.Fields.MemoryTypeWriteBack ||
+    !msr_ept_cap.Fields.Pde2MbPages)
+    {
+        LOG_ERR("MTRR: EPT is not supported");
+        return false;
+    }
+
+    if (!msr_ept_cap.Fields.AdvancedVmexitEptViolationsInformation)
+	{
+		LOG_INFO("The processor doesn't report advanced VM-exit information for EPT violations");
+	}
+
     return true;
 }
 

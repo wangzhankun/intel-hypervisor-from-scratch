@@ -15,23 +15,34 @@
 #define VMXON_SIZE 4096
 #define VMM_STACK_SIZE 0x8000
 
+typedef struct _VMX_NON_ROOT_MODE_MEMORY_ALLOCATOR
+{
+    void* PreAllocatedBuffer; // As we can't use ExAllocatePoolWithTag in VMX Root mode, this holds a pre-allocated buffer address
+                              // PreAllocatedBuffer == 0 indicates that it's not previously allocated
+} VMX_NON_ROOT_MODE_MEMORY_ALLOCATOR, *PVMX_NON_ROOT_MODE_MEMORY_ALLOCATOR;
+
+
 typedef struct _VIRTUAL_MACHINE_STATE
 {
-    phys_addr_t VmxonRegion; // VMXON region, physical address
-    phys_addr_t VmcsRegion;  // VMCS region, physical address
+    bool IsOnVmxRootMode;
+
+    phys_addr_t VmxonRegionPhyAddr; // VMXON region, physical address
+    phys_addr_t VmcsRegionPhyAddr;  // VMCS region, physical address
 
     uint64_t Eptp;              // extended page table pointer
     uint64_t VmmStack;          // stack for vmm in vm-exit state, virtual address
     uint64_t MsrBitmap;         // msr bitmap virtual address
     uint64_t MsrBitmapPhysical; // msr bitmap physical address
+
+    VMX_NON_ROOT_MODE_MEMORY_ALLOCATOR PreAllocatedMemoryDetails;
 } VIRTUAL_MACHINE_STATE, *PVIRTUAL_MACHINE_STATE;
 
 
-BOOL initVMX(void);
-void exitVMX(void);
+PEPT_STATE initVMX(void);
+void exitVMX(PEPT_STATE ept_state);
 
-void launchVm(int cpu, PEPT_STATE ept_state);
-void exitVm(int cpu, PEPT_STATE ept_state);
+bool launchVm(PEPT_STATE ept_state);
+void exitVm(PEPT_STATE ept_state);
 
 
 #endif /* __VMX_H__ */

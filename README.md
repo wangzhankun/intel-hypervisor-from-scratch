@@ -6,7 +6,60 @@
 * [VMCS-Auditor](https://github.com/SinaKarvandi/VMCS-Auditor)
 * [Intel VT学习笔记](https://blog.csdn.net/qq_41988448/category_11624333.html)
 
-## Linux内核调试
+## qemu安装虚拟机
+
+
+
+### 安装虚拟机
+
+```sh
+qemu-img create -f qcow2 ubuntu-server-2204.qcow2 40G
+
+export ISO=/home/wang/Documents/vms/ubuntu-22.04.1-live-server-amd64.iso
+qemu-system-x86_64 -enable-kvm -m 2G -cpu host ubuntu-server-2204.qcow2 -cdrom $ISO
+```
+
+### 设置网络
+
+```sh
+sudo apt install -y bridge-utils        # 虚拟网桥工具
+sudo apt install -y uml-utilities       # UML（User-mode linux）工具
+sudo brctl addbr virbr0 #创建网桥
+sudo brctl stp virbr0 on # 打开网桥stp
+sudo systemctl enable libvirtd # 开机自动启动网桥
+sudo dhclient virbr0 # 网桥自动获取IP
+
+
+sudo ip tuntap add name virbr0-nic mode tap # 添加虚拟网卡，名为virbr0-nic
+sudo ip link set dev virbr0-nic up #  启动网卡
+sudo brctl addif virbr0 virbr0-nic # 添加虚拟网卡到网桥
+
+brctl show # 查看网桥信息
+
+# 启动虚拟机，这里不是创建，仅仅是启动虚拟机
+qemu-system-x86_64 -enable-kvm -m 2G -cpu host \
+    -netdev tap,id=mynet0,ifname=virbr0-nic,script=no,downscript=no  \
+    -device e1000,netdev=mynet0\
+    ubuntu-server-2204.qcow2
+```
+
+* [ubuntu下qemu虚拟机实现和主机以及互联网通信](https://blog.csdn.net/qq_34160841/article/details/104901127)
+
+### 设置共享文件夹
+
+https://libvirt.org/kbase/virtiofs.html
+
+### ubuntu server autologin
+
+```sh
+sudo vim /etc/systemd/system/getty.target.wants/getty@tty1.service 
+
+[Service] 
+ExecStart= 
+ExecStart=-/sbin/agetty --noissue --autologin myusername %I $TERM Type=idle
+```
+
+### Linux内核调试
 ```
 CONFIG_GDB_SCRIPTS=y
 CONFIG_DEBUG_INFO_REDUCED=n
@@ -289,5 +342,12 @@ kmalloc和vmalloc的区别有以下几点：
 
 ## EPT
 
+
+
+
 * VOL3 29.3 THE EXTENDED PAGE TABLE MECHANISM (EPT)
+* Section 29.3.1 gives an overview of EPT.
+* Section 29.3.2 describes operation of EPT-based address translation.
+* Section 29.3.3 discusses VM exits that may be caused by EPT.
+* Section 29.3.7 describes interactions between EPT and memory typing.
 * VOL3 Table 28-7. Exit Qualification for EPT Violations

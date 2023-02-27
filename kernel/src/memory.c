@@ -3,7 +3,7 @@
 
 BOOL allocateVMXRegion(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    guest_state->VmxonRegion = 0;
+    guest_state->VmxonRegionPhyAddr = 0;
 
     void *AlignedVirtualBuffer = get_zeroed_page(GFP_KERNEL);
     if (AlignedVirtualBuffer == 0)
@@ -12,14 +12,14 @@ BOOL allocateVMXRegion(VIRTUAL_MACHINE_STATE *guest_state)
         return false;
     }
 
-    guest_state->VmxonRegion = __pa((void *)AlignedVirtualBuffer);
+    guest_state->VmxonRegionPhyAddr = __pa((void *)AlignedVirtualBuffer);
 
     return true;
 }
 
 BOOL allocateVMCSRegion(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    guest_state->VmcsRegion = 0;
+    guest_state->VmcsRegionPhyAddr = 0;
 
     void *AlignedVirtualBuffer = get_zeroed_page(GFP_KERNEL);
     if (AlignedVirtualBuffer == 0)
@@ -28,13 +28,14 @@ BOOL allocateVMCSRegion(VIRTUAL_MACHINE_STATE *guest_state)
         return false;
     }
 
-
-    guest_state->VmcsRegion = __pa(AlignedVirtualBuffer);
+    guest_state->VmcsRegionPhyAddr = __pa(AlignedVirtualBuffer);
     return true;
 }
 
 bool allocateMsrBitmap(VIRTUAL_MACHINE_STATE *guest_state)
 {
+    // If the “use MSR bitmaps” VM-execution control is 1, bits 11:0 of the MSR-bitmap address must be 0. The
+    // address should not set any bits beyond the processor’s physical-address width.
     void *AlignedVirtualBuffer = get_zeroed_page(GFP_KERNEL);
     if (AlignedVirtualBuffer == 0)
     {
@@ -50,19 +51,19 @@ bool allocateMsrBitmap(VIRTUAL_MACHINE_STATE *guest_state)
 
 void freeVMXRegion(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    if (guest_state->VmxonRegion != 0)
+    if (guest_state->VmxonRegionPhyAddr != 0)
     {
-        free_pages(__va(guest_state->VmxonRegion), 0);
-        guest_state->VmxonRegion = 0;
+        free_pages(__va(guest_state->VmxonRegionPhyAddr), 0);
+        guest_state->VmxonRegionPhyAddr = 0;
     }
 }
 
 void freeVMCSRegion(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    if (guest_state->VmcsRegion != 0)
+    if (guest_state->VmcsRegionPhyAddr != 0)
     {
-        free_pages(__va(guest_state->VmcsRegion), 0);
-        guest_state->VmcsRegion = 0;
+        free_pages(__va(guest_state->VmcsRegionPhyAddr), 0);
+        guest_state->VmcsRegionPhyAddr = 0;
     }
 }
 

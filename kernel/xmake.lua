@@ -6,6 +6,7 @@ target("myhypervisor")
     add_cflags("-g -O0")
     add_rules("platform.linux.driver")
     set_values("linux.driver.linux-headers", "/lib/modules/5.15.0/build")
+    -- set_values("linux.driver.linux-headers", "/lib/modules/5.15.0-60-generic/build")
     add_files("src/*.c", "src/*.S")
 
 

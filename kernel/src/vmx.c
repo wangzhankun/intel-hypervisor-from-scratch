@@ -8,14 +8,14 @@
 #include "../include/vmx_inst.h"
 #include "../include/reg.h"
 #include <asm/msr.h>
+#include "../include/cpu_features.h"
 
 VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
 static cpumask_var_t cpus_hardware_enabled;
+PEPT_STATE g_ept_state = NULL;
 
 uint64_t g_stack_pointer_for_returning;
 uint64_t g_base_pointer_for_returning;
-
-PEPT_STATE g_ept_state = NULL; // init in initVMX
 
 extern void VmentryHandler(void); // defined in VmentryHandler.s
 
@@ -41,13 +41,13 @@ static bool enableVMX(VIRTUAL_MACHINE_STATE *guest_state)
     vmx_basic.All = get_msr(MSR_IA32_VMX_BASIC);
 
     // set the revision id to the vmxon region
-    *(uint32_t *)(__va(guest_state->VmxonRegion)) = vmx_basic.Fields.RevisionId;
+    *(uint32_t *)(__va(guest_state->VmxonRegionPhyAddr)) = vmx_basic.Fields.RevisionId;
 
     // set the revision id to the vmcs region
-    *(uint32_t *)(__va(guest_state->VmcsRegion)) = vmx_basic.Fields.RevisionId;
+    *(uint32_t *)(__va(guest_state->VmcsRegionPhyAddr)) = vmx_basic.Fields.RevisionId;
 
     // check if the vmxon region is supported
-    if (vmxon(guest_state->VmxonRegion) != 0) // execute vmxon instruction
+    if (vmxon(guest_state->VmxonRegionPhyAddr) != 0) // execute vmxon instruction
     {
         LOG_ERR("vmxon failed");
         return false;
@@ -87,6 +87,7 @@ static void destructVirtualMachineState(VIRTUAL_MACHINE_STATE *guest_state)
 
 static bool constructVirtualMachineState(VIRTUAL_MACHINE_STATE *guest_state)
 {
+    guest_state->IsOnVmxRootMode = true;
     // allocate stack for the VM exit handler
     uint64_t vmm_stack_va = kmalloc(VMM_STACK_SIZE, GFP_KERNEL);
     if (!vmm_stack_va)
@@ -172,7 +173,7 @@ ERR:
     return;
 }
 
-void exitVMX(void)
+void exitVMX(PEPT_STATE ept_state)
 {
 
     on_each_cpu((smp_call_func_t)_exitVMX, NULL, 1);
@@ -183,50 +184,61 @@ void exitVMX(void)
     }
     free_cpumask_var(cpus_hardware_enabled);
 
-    destoryEPT2(g_ept_state); // early consturct, late destruct
-    g_ept_state = NULL;
+    destoryEPT(ept_state); // early consturct, late destruct
+    ept_state = NULL;
 }
 
-BOOL initVMX(void)
+PEPT_STATE initVMX(void)
 {
-    g_ept_state = initEPT2();
-    if (g_ept_state == NULL)
-    {
-        LOG_ERR("init ept operation failed");
-        return -1;
-    }
 
     for (int i = 0; i < 32; i++)
     {
         memset(&g_guest_state[i], 0, sizeof(VIRTUAL_MACHINE_STATE));
     }
 
+    g_ept_state = initEPT();
+    if (g_ept_state == NULL)
+    {
+        LOG_ERR("init ept operation failed");
+        return NULL;
+    }
+    ////////////////////ept page hook example
+    // eptPageHook(kmalloc, false);
+    //////////////////////
+
     if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
     {
         LOG_ERR("Failed to allocate cpumask");
-        return false;
+        goto ERR;
     }
 
     on_each_cpu((smp_call_func_t)_initVMX, NULL, 1);
     int cpu_num = cpumask_weight(cpus_hardware_enabled);
     LOG_INFO("VMX is enabled on %d CPUs", cpu_num);
-    return cpu_num == num_online_cpus();
+    if (cpu_num == num_online_cpus())
+    {
+        return g_ept_state;
+    }
+
+ERR:
+    exitVMX(g_ept_state);
+    return NULL;
 }
 
 static int clearVMCSState(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    if (!guest_state || !guest_state->VmcsRegion)
+    if (!guest_state || !guest_state->VmcsRegionPhyAddr)
         return -1;
 
-    return vmclear(guest_state->VmcsRegion);
+    return vmclear(guest_state->VmcsRegionPhyAddr);
 }
 
 static int loadVMCS(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    if (!guest_state || !guest_state->VmcsRegion)
+    if (!guest_state || !guest_state->VmcsRegionPhyAddr)
         return -1;
 
-    return vmptrld((guest_state->VmcsRegion));
+    return vmptrld((guest_state->VmcsRegionPhyAddr));
 }
 
 BOOL getSegmentDescriptor(PSEGMENT_SELECTOR SegmentSelector,
@@ -302,9 +314,10 @@ uint32_t AdjustControls(uint32_t ctl, uint32_t msr)
     return ctl;
 }
 
-void initVmcsControlFields(void)
+void initVmcsControlFields(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
 {
-    vmwrite(TSC_OFFSET, -(1ll << 48));
+    vmwrite(TSC_OFFSET, 0);
+    vmwrite(TSC_OFFSET_HIGH, 0);
 
     // Link Shadow VMCS
     vmwrite(VMCS_LINK_POINTER, ~0ULL);
@@ -312,30 +325,16 @@ void initVmcsControlFields(void)
 
     uint32_t sec_exec_ctl = 0;
 
-    vmwrite(VIRTUAL_PROCESSOR_ID, 0);
-    vmwrite(POSTED_INTR_NV, 0);
+    // vmwrite(VIRTUAL_PROCESSOR_ID, 0);
+    // vmwrite(POSTED_INTR_NV, 0);
 
-    vmwrite(PIN_BASED_VM_EXEC_CONTROL, get_msr(MSR_IA32_VMX_TRUE_PINBASED_CTLS));
+    vmwrite(PIN_BASED_VM_EXEC_CONTROL, AdjustControls(0, MSR_IA32_VMX_TRUE_PINBASED_CTLS));
 
     vmwrite(CPU_BASED_VM_EXEC_CONTROL, AdjustControls(CPU_BASED_USE_MSR_BITMAPS | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS, MSR_IA32_VMX_PROCBASED_CTLS));
-    vmwrite(SECONDARY_VM_EXEC_CONTROL, AdjustControls(SECONDARY_EXEC_ENABLE_RDTSCP | SECONDARY_EXEC_ENABLE_INVPCID | SECONDARY_ENABLE_XSAV_RESTORE, MSR_IA32_VMX_PROCBASED_CTLS2));
-
-    // if (!vmwrite(SECONDARY_VM_EXEC_CONTROL, sec_exec_ctl))
-    // {
-    //     vmwrite(CPU_BASED_VM_EXEC_CONTROL,
-    //             get_msr(MSR_IA32_VMX_TRUE_PROCBASED_CTLS) | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS);
-    // }
-    // else
-    // {
-    //     vmwrite(CPU_BASED_VM_EXEC_CONTROL, get_msr(MSR_IA32_VMX_TRUE_PROCBASED_CTLS));
-    //     // GUEST_ASSERT(!sec_exec_ctl);
-    //     if (!sec_exec_ctl)
-    //         BREAKPOINT();
-    // }
 
     vmwrite(EXCEPTION_BITMAP, 0);
     vmwrite(PAGE_FAULT_ERROR_CODE_MASK, 0);
-    vmwrite(PAGE_FAULT_ERROR_CODE_MATCH, -1); /* Never match */
+    vmwrite(PAGE_FAULT_ERROR_CODE_MATCH, 0);
     vmwrite(CR3_TARGET_COUNT, 0);
     vmwrite(VM_EXIT_CONTROLS, get_msr(MSR_IA32_VMX_EXIT_CTLS) |
                                   VM_EXIT_HOST_ADDR_SPACE_SIZE); /* 64-bit host */
@@ -351,19 +350,31 @@ void initVmcsControlFields(void)
     vmwrite(CR4_GUEST_HOST_MASK, 0);
     vmwrite(CR0_READ_SHADOW, get_cr0());
     vmwrite(CR4_READ_SHADOW, get_cr4());
+
+    vmwrite(MSR_BITMAP, guest_state->MsrBitmapPhysical);
+    // 设置EPT
+    vmwrite(EPT_POINTER, ept_state->EptPointer.All);
+    vmwrite(EPT_POINTER_HIGH, ept_state->EptPointer.All >> 32);
+    vmwrite(CPU_BASED_VM_EXEC_CONTROL, AdjustControls(CPU_BASED_ACTIVATE_SECONDARY_CONTROLS, MSR_IA32_VMX_PROCBASED_CTLS));
+    // enable EPT
+    vmwrite(SECONDARY_VM_EXEC_CONTROL, AdjustControls(
+                                           SECONDARY_EXEC_ENABLE_RDTSCP | SECONDARY_EXEC_ENABLE_EPT |
+                                               SECONDARY_EXEC_ENABLE_INVPCID | SECONDARY_ENABLE_XSAV_RESTORE,
+                                           MSR_IA32_VMX_PROCBASED_CTLS2));
+
 }
 
 void initVmcsHostState(void)
 {
     uint32_t exit_controls = vmreadz(VM_EXIT_CONTROLS);
 
-    vmwrite(HOST_ES_SELECTOR, get_es());
-    vmwrite(HOST_CS_SELECTOR, get_cs());
-    vmwrite(HOST_SS_SELECTOR, get_ss());
-    vmwrite(HOST_DS_SELECTOR, get_ds());
-    vmwrite(HOST_FS_SELECTOR, get_fs());
-    vmwrite(HOST_GS_SELECTOR, get_gs());
-    vmwrite(HOST_TR_SELECTOR, get_tr());
+    vmwrite(HOST_ES_SELECTOR, get_es() & 0XF8);
+    vmwrite(HOST_CS_SELECTOR, get_cs() & 0XF8);
+    vmwrite(HOST_SS_SELECTOR, get_ss() & 0XF8);
+    vmwrite(HOST_DS_SELECTOR, get_ds() & 0XF8);
+    vmwrite(HOST_FS_SELECTOR, get_fs() & 0XF8);
+    vmwrite(HOST_GS_SELECTOR, get_gs() & 0XF8);
+    vmwrite(HOST_TR_SELECTOR, get_tr() & 0XF8);
 
     if (exit_controls & VM_EXIT_LOAD_IA32_PAT)
         vmwrite(HOST_IA32_PAT, get_msr(MSR_IA32_CR_PAT));
@@ -402,7 +413,9 @@ void initVmcsGuestState(void)
     vmwrite(GUEST_PML_INDEX, 0);
 
     vmwrite(VMCS_LINK_POINTER, -1ll);
-    vmwrite(GUEST_IA32_DEBUGCTL, 0);
+    vmwrite(GUEST_IA32_DEBUGCTL, get_msr(MSR_IA32_DEBUGCTLMSR) & 0XFFFFFFFF);
+    vmwrite(GUEST_IA32_DEBUGCTL_HIGH, get_msr(MSR_IA32_DEBUGCTLMSR) >> 32);
+
     vmwrite(GUEST_IA32_PAT, vmreadz(HOST_IA32_PAT));
     vmwrite(GUEST_IA32_EFER, vmreadz(HOST_IA32_EFER));
     vmwrite(GUEST_IA32_PERF_GLOBAL_CTRL,
@@ -455,28 +468,16 @@ void initVmcsGuestState(void)
     vmwrite(GUEST_PENDING_DBG_EXCEPTIONS, 0);
     vmwrite(GUEST_SYSENTER_ESP, vmreadz(HOST_IA32_SYSENTER_ESP));
     vmwrite(GUEST_SYSENTER_EIP, vmreadz(HOST_IA32_SYSENTER_EIP));
-
-    // vmwrite(MSR_BITMAP, vmx->msr_gpa);
-    // vmwrite(VMREAD_BITMAP, vmx->vmread_gpa);
-    // vmwrite(VMWRITE_BITMAP, vmx->vmwrite_gpa);
 }
 
 void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
 {
-    initVmcsControlFields();
+    initVmcsControlFields(guest_state, ept_state);
     LOG_INFO("initVmcsControlFields success");
     initVmcsHostState();
     LOG_INFO("initVmcsHostState success");
     initVmcsGuestState();
     LOG_INFO("initVmcsGuestState success");
-
-    // 设置EPT
-    vmwrite(EPT_POINTER, ept_state->EptPointer.All);
-    // enable EPT
-    vmwrite(SECONDARY_VM_EXEC_CONTROL, AdjustControls(
-                                           SECONDARY_EXEC_ENABLE_RDTSCP | SECONDARY_EXEC_ENABLE_EPT |
-                                               SECONDARY_EXEC_ENABLE_INVPCID | SECONDARY_ENABLE_XSAV_RESTORE,
-                                           MSR_IA32_VMX_PROCBASED_CTLS2));
 
     //
     // left here just for test
@@ -491,9 +492,8 @@ void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
 
 void _launchVm(void *stack)
 {
-    int cpu = -1;
+    int cpu = smp_processor_id();
     PEPT_STATE ept_state = NULL;
-    memcpy(&cpu, stack, sizeof(int));
     memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
 
     LOG_INFO("Launching VM on CPU %d, ept_state = %p", cpu, ept_state);
@@ -530,7 +530,7 @@ void _launchVm(void *stack)
     // if vmlaunch succeeds, we should never reach here
     // if fails, we should handle the error
     u32 error = vmreadz(VM_INSTRUCTION_ERROR);
-    // vmxoff();
+    vmxoff();
     LOG_ERR("Failed to launch VM: 0x%lld", error);
 
     // __asm__ __volatile__("int3");
@@ -540,40 +540,42 @@ void _launchVm(void *stack)
     return;
 }
 
-void launchVm(int cpu, PEPT_STATE ept_state)
+bool launchVm(PEPT_STATE ept_state)
 {
-    LOG_INFO("Launching VM on CPU %d", cpu);
+    LOG_INFO("Launching VM on CPUs");
     char *stack = kmalloc(4096, GFP_KERNEL);
     if (!stack)
     {
         LOG_ERR("Failed to allocate stack");
-        return;
+        return false;
     }
     memset(stack, 0, 4096);
 
-    memcpy(stack, &cpu, sizeof(int));
     memcpy(stack + sizeof(int), &ept_state, sizeof(PEPT_STATE));
 
-    if (smp_processor_id() != cpu)
-    {
-        int err = smp_call_function_single(cpu, (smp_call_func_t)_launchVm, (void *)stack, 1);
-        if (err)
-        {
-            LOG_ERR("Failed to launch VM on CPU %d, errno = %d", cpu, err);
-        }
-    }
-    else
-    {
-        _launchVm(stack);
-    }
+    // on_each_cpu((smp_call_func_t)_launchVm, (void *)stack, 1);
+
+    // if (smp_processor_id() != cpu)
+    // {
+    int err = smp_call_function_single(0, (smp_call_func_t)_launchVm, (void *)stack, 1);
+    //     if (err)
+    //     {
+    //         LOG_ERR("Failed to launch VM on CPU %d, errno = %d", cpu, err);
+    //     }
+    // }
+    // else
+    // {
+    //     _launchVm(stack);
+    // }
     kfree(stack);
+
+    return true;
 }
 
 void _exitVm(void *stack)
 {
-    int cpu;
+    int cpu = smp_processor_id();
     PEPT_STATE ept_state;
-    memcpy(&cpu, stack, sizeof(int));
     memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
 
     vmxoff();
@@ -581,12 +583,12 @@ void _exitVm(void *stack)
 
     if (g_guest_state[cpu].VmmStack)
     {
-        kfree((void*)(g_guest_state[cpu].VmmStack));
+        kfree((void *)(g_guest_state[cpu].VmmStack));
         g_guest_state[cpu].VmmStack = NULL;
     }
 }
 
-void exitVm(int cpu, PEPT_STATE ept_state)
+void exitVm(PEPT_STATE ept_state)
 {
     char *stack = kmalloc(PAGE_SIZE, GFP_KERNEL);
     if (!stack)
@@ -595,12 +597,12 @@ void exitVm(int cpu, PEPT_STATE ept_state)
         return;
     }
 
-    memcpy(stack, &cpu, sizeof(int));
     memcpy(stack + sizeof(int), &ept_state, sizeof(PEPT_STATE));
 
-    int err = smp_call_function_single(cpu, (smp_call_func_t)_exitVm, (void *)stack, 1);
-    if (err)
-    {
-        LOG_ERR("Failed to exit VM on CPU %d, errno = %d", cpu, err);
-    }
+    // on_each_cpu((smp_call_func_t)_exitVm, (void *)stack, 1);
+    int err = smp_call_function_single(0, (smp_call_func_t)_exitVm, (void *)stack, 1);
+    // if (err)
+    // {
+    //     LOG_ERR("Failed to exit VM on CPU %d, errno = %d", cpu, err);
+    // }
 }
