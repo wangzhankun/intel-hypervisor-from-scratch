@@ -16,8 +16,6 @@
 
 // uint64_t g_guest_rsp = 0, g_guest_rip = 0;
 extern u64 g_back_host_rip, g_back_host_rsp;
-extern uint64_t g_stack_pointer_for_returning;
-extern uint64_t g_base_pointer_for_returning;
 extern VIRTUAL_MACHINE_STATE g_guest_state[];
 extern bool eptVmxRootModePageHook(void *target_func, bool has_launched);
 extern int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification, u64 guest_phy_addr); // defined in eptp.c
@@ -416,19 +414,6 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     case EXIT_REASON_HLT:
     {
         LOG_INFO("[*] Execution of HLT detected... \n");
-
-        //
-        // that's enough for now ;)
-        //
-        // AsmVmxoffAndRestoreState();
-        __asm__ __volatile__("vmxoff\n\t");
-        // restore rsp, rbp
-        __asm__ __volatile__("movq %0, %%rsp"
-                             :
-                             : "m"(g_stack_pointer_for_returning));
-        __asm__ __volatile__("movq %0, %%rbp"
-                             :
-                             : "m"(g_base_pointer_for_returning));
 
         break;
     }

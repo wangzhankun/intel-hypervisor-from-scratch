@@ -15,6 +15,7 @@ MODULE_LICENSE("GPL");
 #include "../include/vmx.h"
 #include "../include/cpu_features.h"
 
+PEPT_STATE ept_state = NULL;
 
 struct file_operations hyper_fops = {
     .owner = THIS_MODULE,
@@ -39,14 +40,6 @@ static int __init misc_init(void)
     LOG_INFO("**********************************");
     // BREAKPOINT();
 
-    int ret;
-    ret = misc_register(&hypervisor_cdev);
-    if (ret < 0)
-    {
-        LOG_ERR(MODULENAME " register failed\n");
-        return ret;
-    }
-
     if (isSupportedVMX())
     {
         LOG_INFO("vmx is supported");
@@ -55,6 +48,26 @@ static int __init misc_init(void)
     {
         LOG_ERR("vmx is not supported");
         return -1;
+    }
+
+
+    ept_state = initVMX();
+    if (NULL != ept_state)
+    {
+        LOG_INFO("init vmx operation success");
+    }
+    else
+    {
+        LOG_ERR("init vmx operation failed");
+        return -1;
+    }
+
+    int ret;
+    ret = misc_register(&hypervisor_cdev);
+    if (ret < 0)
+    {
+        LOG_ERR(MODULENAME " register failed\n");
+        return ret;
     }
 
 
@@ -67,9 +80,10 @@ static int __init misc_init(void)
 
 static void misc_exit(void)
 {
-
-
     misc_deregister(&hypervisor_cdev);
+
+    exitVMX(ept_state);
+
 
     LOG_INFO("Goodbye, hypervisor\n");
     LOG_INFO("--------------------------\n");

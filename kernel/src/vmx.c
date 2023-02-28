@@ -12,9 +12,8 @@
 
 VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
 static cpumask_var_t cpus_hardware_enabled;
+static cpumask_var_t cpus_launched_vm;
 
-uint64_t g_stack_pointer_for_returning;
-uint64_t g_base_pointer_for_returning;
 
 extern void VmentryHandler(void); // defined in VmentryHandler.s
 
@@ -56,17 +55,19 @@ static bool enableVMX(VIRTUAL_MACHINE_STATE *guest_state)
 
 static void disableVMX(void)
 {
+    int cpu = smp_processor_id();
     uint64_t cr4 = get_cr4();
     if (!(cr4 & X86_CR4_VMXE))
     {
-        LOG_ERR("VMX is already disabled");
+        LOG_ERR("VMX is already disabled on cpu %d", cpu);
         return;
     }
     else
     {
+        vmxoff();
         cr4 &= ~X86_CR4_VMXE;
         set_cr4(cr4);
-        LOG_INFO("VMX is disabled");
+        LOG_INFO("VMX is disabled on cpu %d", cpu);
     }
 }
 
@@ -129,7 +130,7 @@ static void __exitVMXOnCpu(int cpu)
         return;
     }
 
-    vmxoff();
+    disableVMX();
 
     destructVirtualMachineState(guest_state);
     cpumask_clear_cpu(cpu, cpus_hardware_enabled);
@@ -172,7 +173,7 @@ ERR:
 
 void exitVMX(PEPT_STATE ept_state)
 {
-
+    LOG_INFO("exitVMX ing...");
     on_each_cpu((smp_call_func_t)_exitVMX, NULL, 1);
     int cpu_num = cpumask_weight(cpus_hardware_enabled);
     if (cpu_num != 0)
@@ -183,7 +184,6 @@ void exitVMX(PEPT_STATE ept_state)
 
     destoryEPT2(ept_state); // early consturct, late destruct
     ept_state = NULL;
-    disableVMX();
 }
 
 PEPT_STATE initVMX(void)
@@ -359,7 +359,6 @@ void initVmcsControlFields(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_st
                                            SECONDARY_EXEC_ENABLE_RDTSCP | SECONDARY_EXEC_ENABLE_EPT |
                                                SECONDARY_EXEC_ENABLE_INVPCID | SECONDARY_ENABLE_XSAV_RESTORE,
                                            MSR_IA32_VMX_PROCBASED_CTLS2));
-
 }
 
 void initVmcsHostState(void)
@@ -488,9 +487,36 @@ void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
     vmwrite(HOST_RIP, (uint64_t)VmexitHandler);
 }
 
+void _exitVmOnCPU(int cpu)
+{
+    LOG_INFO("Exiting VM on CPU %d", cpu);
+    if (clearVMCSState(&g_guest_state[cpu]))
+    {
+        LOG_ERR("Failed to clear VMCS state");
+        return;
+    }
+    LOG_INFO("VMCS state cleared\n");
+    cpumask_clear_cpu(cpu, cpus_launched_vm);
+}
+
+void _exitVm(void *unused)
+{
+    int cpu = smp_processor_id();
+    if (cpumask_test_cpu(cpu, cpus_launched_vm))
+    {
+        _exitVmOnCPU(cpu);
+    }
+    return;
+}
+
 void _launchVm(void *stack)
 {
     int cpu = smp_processor_id();
+    if(!cpumask_test_cpu(cpu, cpus_launched_vm))
+    {
+        LOG_ERR("No need to launch VM for CPU %d", cpu);
+        return;
+    }
     PEPT_STATE ept_state = NULL;
     memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
 
@@ -499,7 +525,9 @@ void _launchVm(void *stack)
     // clearing the VMCS state and loading it as the current VMCS
     if (clearVMCSState(&g_guest_state[cpu]))
     {
+        // because the first thing is to clear the VMCS state, so if it fails, we can just return
         LOG_ERR("Failed to clear VMCS state");
+        cpumask_clear_cpu(cpu, cpus_launched_vm);
         return;
     }
     LOG_INFO("VMCS state cleared\n");
@@ -508,33 +536,30 @@ void _launchVm(void *stack)
     if (loadVMCS(&g_guest_state[cpu]))
     {
         LOG_ERR("Failed to load VMCS");
-        return;
+        goto ERR;
     }
     LOG_INFO("VMCS loaded\n");
 
     LOG_INFO("setting up VMCS\n");
     setupVMCS(&g_guest_state[cpu], ept_state);
 
-    // https://rayanfam.com/topics/hypervisor-from-scratch-part-5/#saving-a-return-point
-    __asm__ __volatile__("movq %%rsp, %0"
-                         : "=m"(g_stack_pointer_for_returning));
-    __asm__ __volatile__("movq %%rbp, %0"
-                         : "=m"(g_base_pointer_for_returning));
+
     vmlaunch();
 
-    LOG_INFO("vmlaunch returned\n");
-    //*
-
+ERR:
     // if vmlaunch succeeds, we should never reach here
     // if fails, we should handle the error
+    LOG_INFO("vmlaunch returned\n");
     u32 error = vmreadz(VM_INSTRUCTION_ERROR);
-    vmxoff();
     LOG_ERR("Failed to launch VM: %lld", error);
+    _exitVmOnCPU(cpu);
+    return;
+}
 
-    // __asm__ __volatile__("int3");
-
-    //*/
-
+void exitVm(PEPT_STATE unused)
+{
+    on_each_cpu_mask(cpus_launched_vm, (smp_call_func_t)_exitVm, (void *)NULL, 1);
+    free_cpumask_var(cpus_launched_vm);
     return;
 }
 
@@ -551,55 +576,17 @@ bool launchVm(PEPT_STATE ept_state)
 
     memcpy(stack + sizeof(int), &ept_state, sizeof(PEPT_STATE));
 
-    // on_each_cpu((smp_call_func_t)_launchVm, (void *)stack, 1);
+    if (!alloc_cpumask_var(&cpus_launched_vm, GFP_KERNEL))
+    {
+        LOG_ERR("Failed to allocate cpumask");
+        return false;
+    }
 
-    // if (smp_processor_id() != cpu)
-    // {
-    int err = smp_call_function_single(0, (smp_call_func_t)_launchVm, (void *)stack, 1);
-    //     if (err)
-    //     {
-    //         LOG_ERR("Failed to launch VM on CPU %d, errno = %d", cpu, err);
-    //     }
-    // }
-    // else
-    // {
-    //     _launchVm(stack);
-    // }
+    cpumask_set_cpu(0, cpus_launched_vm);
+
+    on_each_cpu_mask(cpus_launched_vm, (smp_call_func_t)_launchVm, (void *)stack, 1);
+
     kfree(stack);
 
     return true;
-}
-
-void _exitVm(void *stack)
-{
-    int cpu = smp_processor_id();
-    PEPT_STATE ept_state;
-    memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
-
-    if(clearVMCSState(&g_guest_state[cpu]))
-    {
-        LOG_ERR("Failed to clear VMCS state");
-        return;
-    }
-    LOG_INFO("VMCS state cleared\n");
-    return;
-}
-
-void exitVm(PEPT_STATE ept_state)
-{
-    char *stack = kmalloc(PAGE_SIZE, GFP_KERNEL);
-    if (!stack)
-    {
-        LOG_ERR("Failed to allocate stack");
-        return;
-    }
-
-    memcpy(stack + sizeof(int), &ept_state, sizeof(PEPT_STATE));
-
-    // on_each_cpu((smp_call_func_t)_exitVm, (void *)stack, 1);
-    int err = smp_call_function_single(0, (smp_call_func_t)_exitVm, (void *)stack, 1);
-    // if (err)
-    // {
-    //     LOG_ERR("Failed to exit VM on CPU %d, errno = %d", cpu, err);
-    // }
 }
