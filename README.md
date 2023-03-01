@@ -363,3 +363,32 @@ EPT paging structure必须是物理连续的空间，因此坚决不能使用vma
 * Section 29.3.3 discusses VM exits that may be caused by EPT.
 * Section 29.3.7 describes interactions between EPT and memory typing.
 * VOL3 Table 28-7. Exit Qualification for EPT Violations
+
+
+## SMP
+
+### IRQ
+
+An IRQ is an interrupt request from a device. Currently they can come in over a pin, or over a packet. Several devices may be connected to the same pin thus sharing an IRQ.
+
+An IRQ number is a kernel identifier used to talk about a hardware interrupt source. Typically this is an index into the global irq_desc array, but except for what linux/interrupt.h implements the details are architecture specific.
+
+An IRQ number is an enumeration of the possible interrupt sources on a machine. Typically what is enumerated is the number of input pins on all of the interrupt controller in the system. In the case of ISA what is enumerated are the 16 input pins on the two i8259 interrupt controllers.
+
+Architectures can assign additional meaning to the IRQ numbers, and are encouraged to in the case where there is any manual configuration of the hardware involved. The ISA IRQs are a classic example of assigning this kind of additional meaning.
+
+* [Interrupts linux labs](https://linux-kernel-labs.github.io/refs/heads/master/lectures/interrupts.html)
+
+### 禁用抢占
+
+`local_bh_disable` disables the processing of bottom halves (softirqs). Softirqs are processed on either, interrupt return path, or by the ksoftirqd-(per cpu)-thread that will be woken up if the system suffers of heavy softirq-load.
+
+`preempt_disable` disables preemption, which means, that while a thread is executing inside a `preempt_disable` <-> `preemt_enable` scope, it will not be put to sleep by the scheduler. This means that, if the system-timer-interrupt occurs while the current thread is inside that scope, it might update the accouting tables of the scheduler, but it will not switch context to another thread. this includes the softirqd.
+
+`local_irq_disable` or `local_irq_save` disable interrupts for the local cpu. this means that the local cpu will not react to any irqs, so it will not run any interrupt return paths and hence, cannot run softirqs there.
+
+```cpp
+#define get_cpu() ({ preempt_disable(); smp_processor_id(); })
+#define smp_processor_id() raw_smp_processor_id()
+#define put_cpu() preempt_enable()
+```

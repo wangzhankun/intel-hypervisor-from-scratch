@@ -26,6 +26,9 @@ typedef struct _VIRTUAL_MACHINE_STATE
 {
     bool IsOnVmxRootMode;
 
+    u64 back_host_rsp;
+    u64 back_host_rip;
+
     phys_addr_t VmxonRegionPhyAddr; // VMXON region, physical address
     phys_addr_t VmcsRegionPhyAddr;  // VMCS region, physical address
 

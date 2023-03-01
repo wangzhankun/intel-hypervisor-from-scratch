@@ -12,8 +12,6 @@
 
 VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
 static cpumask_var_t cpus_hardware_enabled;
-static cpumask_var_t cpus_launched_vm;
-
 
 extern void VmentryHandler(void); // defined in VmentryHandler.s
 
@@ -496,27 +494,82 @@ void _exitVmOnCPU(int cpu)
         return;
     }
     LOG_INFO("VMCS state cleared\n");
-    cpumask_clear_cpu(cpu, cpus_launched_vm);
 }
 
 void _exitVm(void *unused)
 {
     int cpu = smp_processor_id();
-    if (cpumask_test_cpu(cpu, cpus_launched_vm))
-    {
-        _exitVmOnCPU(cpu);
-    }
+    _exitVmOnCPU(cpu);
+    return;
+}
+
+void __launchVmOncpu(int cpu)
+{
+    // 保存 BACKHERE 的地址，之后退出VM之后需要跳转到 BACKHERE
+    __asm__ goto(
+        "lea %l[BACKHERE], %%rax\n\t"
+        "movq %%rax, %0\n\t"
+        : "=m"(g_guest_state[cpu].back_host_rip)
+        :
+        : "rax"
+        : BACKHERE);
+
+    __asm__ __volatile__(
+        "pushfq\n\t"
+        "pushq %%rax\n\t"
+        "pushq %%rbx\n\t"
+        "pushq %%rcx\n\t"
+        "pushq %%rdx\n\t"
+        "pushq %%rdi\n\t"
+        "pushq %%rsi\n\t"
+        "pushq %%rbp\n\t"
+        "pushq %%rsp\n\t"
+        "pushq %%r8\n\t"
+        "pushq %%r9\n\t"
+        "pushq %%r10\n\t"
+        "pushq %%r11\n\t"
+        "pushq %%r12\n\t"
+        "pushq %%r13\n\t"
+        "pushq %%r14\n\t"
+        "pushq %%r15\n\t"
+        "movq %%rsp, %0\n\t"
+        : "=m"(g_guest_state[cpu].back_host_rsp)
+        :
+        :);
+
+    vmlaunch();
+
+BACKHERE:
+    // 必须要在这里的原因是，_launchVm是在on_each_cpu中调用的
+    // 在on_each_cpu中，会 diasble local irq
+    // only after VM exit will execute this code
+    __asm__ __volatile__(
+        "popq %%r15\n\t"
+        "popq %%r14\n\t"
+        "popq %%r13\n\t"
+        "popq %%r12\n\t"
+        "popq %%r11\n\t"
+        "popq %%r10\n\t"
+        "popq %%r9\n\t"
+        "popq %%r8\n\t"
+        "popq %%rsp\n\t"
+        "popq %%rbp\n\t"
+        "popq %%rsi\n\t"
+        "popq %%rdi\n\t"
+        "popq %%rdx\n\t"
+        "popq %%rcx\n\t"
+        "popq %%rbx\n\t"
+        "popq %%rax\n\t"
+        "popfq\n\t"
+        :);
+
     return;
 }
 
 void _launchVm(void *stack)
 {
     int cpu = smp_processor_id();
-    if(!cpumask_test_cpu(cpu, cpus_launched_vm))
-    {
-        LOG_ERR("No need to launch VM for CPU %d", cpu);
-        return;
-    }
+
     PEPT_STATE ept_state = NULL;
     memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
 
@@ -527,7 +580,6 @@ void _launchVm(void *stack)
     {
         // because the first thing is to clear the VMCS state, so if it fails, we can just return
         LOG_ERR("Failed to clear VMCS state");
-        cpumask_clear_cpu(cpu, cpus_launched_vm);
         return;
     }
     LOG_INFO("VMCS state cleared\n");
@@ -543,9 +595,7 @@ void _launchVm(void *stack)
     LOG_INFO("setting up VMCS\n");
     setupVMCS(&g_guest_state[cpu], ept_state);
 
-
-    vmlaunch();
-
+    return;
 ERR:
     // if vmlaunch succeeds, we should never reach here
     // if fails, we should handle the error
@@ -558,8 +608,7 @@ ERR:
 
 void exitVm(PEPT_STATE unused)
 {
-    on_each_cpu_mask(cpus_launched_vm, (smp_call_func_t)_exitVm, (void *)NULL, 1);
-    free_cpumask_var(cpus_launched_vm);
+    on_each_cpu((smp_call_func_t)_exitVm, (void *)NULL, 1);
     return;
 }
 
@@ -576,17 +625,15 @@ bool launchVm(PEPT_STATE ept_state)
 
     memcpy(stack + sizeof(int), &ept_state, sizeof(PEPT_STATE));
 
-    if (!alloc_cpumask_var(&cpus_launched_vm, GFP_KERNEL))
-    {
-        LOG_ERR("Failed to allocate cpumask");
-        return false;
-    }
 
-    cpumask_set_cpu(0, cpus_launched_vm);
 
-    on_each_cpu_mask(cpus_launched_vm, (smp_call_func_t)_launchVm, (void *)stack, 1);
+    on_each_cpu((smp_call_func_t)_launchVm, (void *)stack, 1);
 
     kfree(stack);
+
+    int cpu = get_cpu(); // 禁用抢占
+    __launchVmOncpu(cpu);
+    put_cpu(); // 启用抢占
 
     return true;
 }

@@ -14,13 +14,20 @@
 #define HYPERV_CPUID_MIN 0x40000005
 #define HYPERV_CPUID_MAX 0x4000ffff
 
-// uint64_t g_guest_rsp = 0, g_guest_rip = 0;
-extern u64 g_back_host_rip, g_back_host_rsp;
 extern VIRTUAL_MACHINE_STATE g_guest_state[];
 extern bool eptVmxRootModePageHook(void *target_func, bool has_launched);
 extern int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification, u64 guest_phy_addr); // defined in eptp.c
-extern void exitVMAndVMX(void); //defined in open_close.c
 
+void backHost(void)
+{
+    int cpu = smp_processor_id();
+    __asm__ __volatile__(
+        "movq %0, %%rsp\n\t" // 恢复 rsp
+        "jmp %1"//跳转回宿主机
+        :
+        : "m"(g_guest_state[cpu].back_host_rsp),
+          "m"(g_guest_state[cpu].back_host_rip));
+}
 
 /**
  * @brief handle CPUID instruction
@@ -297,7 +304,7 @@ void handleVmcall(PGUEST_REGS GuestRegs)
     case VMCALL_BACK_TO_HOST:
     {
         // TODO save guest state
-        exitVMAndVMX();
+        backHost();
         break;
     }
     case VMCALL_EXEC_HOOK_PAGE:

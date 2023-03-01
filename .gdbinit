@@ -1,5 +1,6 @@
 define adddbg
-    b exitVMAndVMX
+    b backHost
+    b _launchVm
 end
 
 define addsym
