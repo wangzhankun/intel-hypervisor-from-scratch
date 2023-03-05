@@ -71,7 +71,9 @@ static int __init misc_init(void)
     }
 
 
-
+    LOG_INFO("CR0 = 0x%llx", get_cr0());
+    LOG_INFO("CR3 = 0x%llx", get_cr3());
+    LOG_INFO("CR4 = 0x%llx", get_cr4());
 
     LOG_INFO(MODULENAME " register success\n");
 

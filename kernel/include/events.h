@@ -1,0 +1,109 @@
+#ifndef __EVENTS_H__
+#define __EVENTS_H__
+
+#include "global.h"
+#include "types.h"
+
+// VOL3 27.6 EVENT INJECTION
+
+//////////////////////////////////////////////////
+//					Enums						//
+//////////////////////////////////////////////////
+
+typedef enum _EXCEPTION_VECTORS
+{
+	EXCEPTION_VECTOR_DIVIDE_ERROR,
+	EXCEPTION_VECTOR_DEBUG_BREAKPOINT,
+	EXCEPTION_VECTOR_NMI,
+	EXCEPTION_VECTOR_BREAKPOINT,
+	EXCEPTION_VECTOR_OVERFLOW,
+	EXCEPTION_VECTOR_BOUND_RANGE_EXCEEDED,
+	EXCEPTION_VECTOR_UNDEFINED_OPCODE,
+	EXCEPTION_VECTOR_NO_MATH_COPROCESSOR,
+	EXCEPTION_VECTOR_DOUBLE_FAULT,
+	EXCEPTION_VECTOR_RESERVED0,
+	EXCEPTION_VECTOR_INVALID_TASK_SEGMENT_SELECTOR,
+	EXCEPTION_VECTOR_SEGMENT_NOT_PRESENT,
+	EXCEPTION_VECTOR_STACK_SEGMENT_FAULT,
+	EXCEPTION_VECTOR_GENERAL_PROTECTION_FAULT,
+	EXCEPTION_VECTOR_PAGE_FAULT,
+	EXCEPTION_VECTOR_RESERVED1,
+	EXCEPTION_VECTOR_MATH_FAULT,
+	EXCEPTION_VECTOR_ALIGNMENT_CHECK,
+	EXCEPTION_VECTOR_MACHINE_CHECK,
+	EXCEPTION_VECTOR_SIMD_FLOATING_POINT_NUMERIC_ERROR,
+	EXCEPTION_VECTOR_VIRTUAL_EXCEPTION,
+	EXCEPTION_VECTOR_RESERVED2,
+	EXCEPTION_VECTOR_RESERVED3,
+	EXCEPTION_VECTOR_RESERVED4,
+	EXCEPTION_VECTOR_RESERVED5,
+	EXCEPTION_VECTOR_RESERVED6,
+	EXCEPTION_VECTOR_RESERVED7,
+	EXCEPTION_VECTOR_RESERVED8,
+	EXCEPTION_VECTOR_RESERVED9,
+	EXCEPTION_VECTOR_RESERVED10,
+	EXCEPTION_VECTOR_RESERVED11,
+	EXCEPTION_VECTOR_RESERVED12
+}EXCEPTION_VECTORS;
+
+
+typedef enum _INTERRUPT_TYPE
+{
+	INTERRUPT_TYPE_EXTERNAL_INTERRUPT = 0,
+	INTERRUPT_TYPE_RESERVED = 1,
+	INTERRUPT_TYPE_NMI = 2,
+	INTERRUPT_TYPE_HARDWARE_EXCEPTION = 3,
+	INTERRUPT_TYPE_SOFTWARE_INTERRUPT = 4,
+	INTERRUPT_TYPE_PRIVILEGED_SOFTWARE_INTERRUPT = 5,
+	INTERRUPT_TYPE_SOFTWARE_EXCEPTION = 6,
+	INTERRUPT_TYPE_OTHER_EVENT = 7
+}INTERRUPT_TYPE;
+
+
+//////////////////////////////////////////////////
+//					Structures					//
+//////////////////////////////////////////////////
+
+
+typedef union _INTERRUPT_INFO {
+    // VOL3 25.8.3 VM-Entry Controls for Event Injection
+	struct {
+		u32 Vector : 8;
+		/* 0=Ext Int, 1=Rsvd, 2=NMI, 3=Exception, 4=Soft INT,
+		 * 5=Priv Soft Trap, 6=Unpriv Soft Trap, 7=Other */
+		u32 InterruptType : 3;
+		u32 DeliverErrorCode : 1;  /* 0=Do not deliver, 1=Deliver */
+		u32 Reserved : 19;
+		u32 Valid : 1;         /* 0=Not valid, 1=Valid. Must be checked first */
+	};
+	u32 All;
+} INTERRUPT_INFO, * PINTERRUPT_INFO;
+
+typedef union _VMEXIT_INTERRUPT_INFO {
+	struct {
+		u32 Vector : 8;
+		u32 InterruptionType : 3;
+		u32 ErrorCodeValid : 1;
+		u32 NmiUnblocking : 1;
+		u32 Reserved : 18;
+		u32 Valid : 1;
+	};
+	u32 All;
+}VMEXIT_INTERRUPT_INFO, * PVMEXIT_INTERRUPT_INFO;
+
+typedef struct _EVENT_INFORMATION
+{
+	INTERRUPT_INFO InterruptInfo;
+	u32 InstructionLength;
+	u64 ErrorCode;
+}EVENT_INFORMATION, * PEVENT_INFORMATION;
+
+
+
+void eventInjectInterruption(INTERRUPT_TYPE interruption_type,
+                             EXCEPTION_VECTORS vector,
+                             bool deliver_error_code,
+                             u32 error_code);
+
+void setMonitorTrapFlag(bool set);
+#endif /* __EVENTS_H__ */

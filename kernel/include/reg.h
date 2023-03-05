@@ -3,6 +3,7 @@
 
 #include <linux/types.h>
 #include "./types.h"
+#include "../../lib/header.h"
 
 #define IA32_FEATURE_CONTROL_MSR 0x3a
 #define IA32_VMX_BASIC_MSR 0x480
@@ -161,7 +162,7 @@ typedef union
 	struct
 	{
 		uint64_t VCNT : 8;		// [0-7] // variable range registers count
-		uint64_t FIX : 1;		// [8] // Fixed-range MTRRs are supported when bit 8 is set; 
+		uint64_t FIX : 1;		// [8] // Fixed-range MTRRs are supported when bit 8 is set;
 		uint64_t Reserved1 : 1; // [9]
 		uint64_t WC : 1;		// [10] write-combining memory type is supported when set
 		uint64_t SMRR : 1;		// [11] The system-management range register
@@ -175,14 +176,13 @@ typedef union
 	uint64_t All;
 	struct
 	{
-		u64 type : 8;//indicates the default memory type
+		u64 type : 8; // indicates the default memory type
 		u64 reserved1 : 2;
 		u64 fixed : 1; // fixed range MTRR enable/disable
 		u64 e : 1;	   // MTRR enable/disable
 		u64 reserved2 : 52;
 	} Fields;
 } MSR_MTRR_DEF_TYPE_BITS;
-
 
 typedef union
 {
@@ -298,10 +298,10 @@ typedef union
 		 */
 		u64 InvvpidSingleContextRetainGlobals : 1;
 		u64 Reserved9 : 20;
-	}Fields;
+	} Fields;
 
 	u64 All;
-} MSR_VMX_EPT_VPID_CAP_BITS, * PMSR_VMX_EPT_VPID_CAP_BITS;
+} MSR_VMX_EPT_VPID_CAP_BITS, *PMSR_VMX_EPT_VPID_CAP_BITS;
 
 
 static inline uint64_t hyper_rdmsr(uint32_t msr)

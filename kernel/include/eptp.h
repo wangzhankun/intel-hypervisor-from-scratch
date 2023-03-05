@@ -3,6 +3,7 @@
 
 #include "./global.h"
 #include <linux/list.h> // define list_head
+#include "../../lib/header.h"
 
 #define MAXPHYADDR 45 // 通过 cpuid 指令获取， cpuid.80000008h:EAX[7:0]
 
@@ -521,4 +522,9 @@ void destoryEPT2(PEPT_STATE ept_state);
 bool eptBuildMtrrMap(EPT_STATE *ept_state);
 bool eptPageHook(PEPT_STATE ept_state, void *TargetFunc, bool has_launched);
 
+int eptInsertMemRegion(PEPT_STATE ept_state,
+                       bool has_launched,
+                       struct HV_USERSPACE_MEM_REGION region);
+
+void eptClearPaging(EPTP ept_pointer);
 #endif // __EPTP_H__

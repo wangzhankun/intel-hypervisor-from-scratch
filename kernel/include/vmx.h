@@ -46,6 +46,6 @@ void exitVMX(PEPT_STATE ept_state);
 
 bool launchVm(PEPT_STATE ept_state);
 void exitVm(PEPT_STATE ept_state);
-
+void setupVMCS(PEPT_STATE ept_state);
 
 #endif /* __VMX_H__ */

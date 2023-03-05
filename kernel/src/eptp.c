@@ -6,10 +6,10 @@
 #include <linux/slab.h> // defined kmalloc
 #include "../include/vmx.h"
 #include "../include/vmcall.h"
+#include "../../lib/header.h"
 
 uint64_t g_virtual_guest_memory_address = 0;
 extern VIRTUAL_MACHINE_STATE g_guest_state[]; // defined in vmx.c
-
 
 extern int eptInvept(uint64_t invept_type, void *desc);
 
@@ -104,7 +104,7 @@ void destoryEPT_PTE(PEPT_PTE pte)
         while (p < pte + PAGE_SIZE && p->Fields.PhysicalAddress)
         {
             void *mem = __va(p->Fields.PhysicalAddress << 12);
-            // LOG_INFO("Freeing page: %p\n", mem);
+            // LOG_INFO("Freeing page: 0x%llx\n", mem);
             memset(mem, 0, PAGE_SIZE);
             free_page(mem);
             p++;
@@ -117,7 +117,7 @@ void destoryEPT(PEPT_STATE ept_state)
     if (NULL != ept_state && 0 != ept_state->EptPointer.All)
     {
         PEPT_PML4E pml4e = (PEPT_PML4E)(__va(ept_state->EptPointer.Fields.PML4PhysialAddress << 12));
-        // LOG_INFO("eptp is %p, pml4e is %p\n", p_ept_pointer, pml4e);
+        // LOG_INFO("eptp is 0x%llx, pml4e is 0x%llx\n", p_ept_pointer, pml4e);
         if (pml4e)
         {
             for (PEPT_PML4E p_pml4e = pml4e;
@@ -125,7 +125,7 @@ void destoryEPT(PEPT_STATE ept_state)
                  p_pml4e++)
             {
                 PEPT_PDPTE pdpte = (PEPT_PDPTE)(__va(p_pml4e->Fields.PhysicalAddress << 12));
-                // LOG_INFO("pml4e is %p, pdpte is %p\n", p_pml4e, pdpte);
+                // LOG_INFO("pml4e is 0x%llx, pdpte is 0x%llx\n", p_pml4e, pdpte);
                 if (pdpte)
                 {
                     for (PEPT_PDPTE p_pdpte = pdpte;
@@ -133,7 +133,7 @@ void destoryEPT(PEPT_STATE ept_state)
                          p_pdpte++)
                     {
                         PEPT_PDE pde = (PEPT_PDE)(__va(p_pdpte->Fields.PhysicalAddress << 12));
-                        // LOG_INFO("pdpte is %p, pde is %p\n", p_pdpte, pde);
+                        // LOG_INFO("pdpte is 0x%llx, pde is 0x%llx\n", p_pdpte, pde);
                         if (pde)
                         {
                             PEPT_PTE pte = (PEPT_PTE)(__va(pde->Fields.PhysicalAddress << 12));
@@ -182,6 +182,21 @@ void destoryEPT2(PEPT_STATE ept_state)
         destoryEPTPageTable(ept_state->EptPageTable);
         kfree(ept_state);
         // free_page((unsigned long)ept_state);
+    }
+}
+
+void destoryVMM_EPT_DYNAMIC_SPLIT(PVMM_EPT_DYNAMIC_SPLIT split)
+{
+    if (split)
+    {
+        // TODO
+        // if(split->PML1[0].Fields.PhysicalAddress)
+        // {
+        //     void* mem = __va(split->PML1[0].Fields.PhysicalAddress << 12);
+        //     // memset(mem, 0, PAGE_SIZE);
+        //     free_pages(mem, 9);
+        // }
+        kfree(split);
     }
 }
 
@@ -234,28 +249,14 @@ void EptSetupPML2Entry(PEPT_STATE ept_state, PEPT_PML2_ENTRY pml2_entry, u32 Pag
     pml2_entry->MemoryType = TargetMemoryType;
 }
 
-PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
+/**
+ * @brief
+ * @param ept_state 可以为NULL
+*/
+void initVMM_EPT_PAGE_TABLE(PEPT_STATE ept_state, PVMM_EPT_PAGE_TABLE page_table)
 {
-    PVMM_EPT_PAGE_TABLE page_table = NULL;
     EPT_PML3_POINTER pml3_rwx_template = {0};
     EPT_PML2_ENTRY pml2_entry_template = {0};
-
-    // must use kmalloc for contiguous physical memory
-    page_table = kmalloc(sizeof(VMM_EPT_PAGE_TABLE) / PAGE_SIZE * PAGE_SIZE, GFP_KERNEL);
-    if (!page_table)
-    {
-        LOG_ERR("Failed to allocate memory for EPT page table");
-        goto ERR;
-    }
-    memset(page_table, 0, sizeof(VMM_EPT_PAGE_TABLE));
-
-    // isPageAligned(&page_table->PML4[0]);
-    // isPageAligned(&page_table->PML3[0]);
-    // isPageAligned(&page_table->PML2[0]);
-
-    // isPageAligned(__pa(&page_table->PML4[0]));
-    // isPageAligned(__pa(&page_table->PML3[0]));
-    // isPageAligned(__pa(&page_table->PML2[0]));
 
     INIT_LIST_HEAD(&page_table->DynamicSplitList);
 
@@ -283,15 +284,75 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
     pml2_entry_template.WriteAccess = 1;
     pml2_entry_template.ExecuteAccess = 1;
     pml2_entry_template.LargePage = 1;
+    pml2_entry_template.MemoryType = MEMORY_TYPE_WRITE_BACK;
 
-    for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++)
+    if(ept_state)
     {
-        for (int j = 0; j < VMM_EPT_PML2E_COUNT; j++)
+        for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++)
         {
-            page_table->PML2[i][j].All = pml2_entry_template.All;
-            EptSetupPML2Entry(ept_state, &page_table->PML2[i][j], (i * VMM_EPT_PML2E_COUNT + j));
+            for (int j = 0; j < VMM_EPT_PML2E_COUNT; j++)
+            {
+                page_table->PML2[i][j].All = pml2_entry_template.All;
+                EptSetupPML2Entry(ept_state, &page_table->PML2[i][j], (i * VMM_EPT_PML2E_COUNT + j));        
+            }
         }
     }
+    else
+    {
+        for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++)
+        {
+            for (int j = 0; j < VMM_EPT_PML2E_COUNT; j++)
+            {
+                page_table->PML2[i][j].All = pml2_entry_template.All | ((u64)(i * VMM_EPT_PML2E_COUNT + j));
+            }
+        }
+    }
+    page_table->PML2[0][0].MemoryType = MEMORY_TYPE_UNCACHEABLE;
+}
+
+/**
+ * @brief 复位 page table，并且释放掉动态分配的 pml1的 page table的内存
+*/
+void eptClearPaging(EPTP ept_pointer)
+{
+    // 这是显然的。因为table中的第一个元素就是PML4E
+    // 因此，第一个PML4E的地址就是table的地址
+    PVMM_EPT_PAGE_TABLE table = __va(ept_pointer.Fields.PML4PhysialAddress << 12);
+    struct list_head head = table->DynamicSplitList;
+    struct list_head *pos, *n;
+    list_for_each_safe(pos, n, &head)
+    {
+        VMM_EPT_DYNAMIC_SPLIT *p = list_entry(pos, VMM_EPT_DYNAMIC_SPLIT, DynamicSplitList);
+        list_del(pos);
+        destoryVMM_EPT_DYNAMIC_SPLIT(p);
+    }
+    initVMM_EPT_PAGE_TABLE(NULL, table);
+}
+
+
+
+PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
+{
+    PVMM_EPT_PAGE_TABLE page_table = NULL;
+
+    // must use kmalloc for contiguous physical memory
+    page_table = kmalloc(sizeof(VMM_EPT_PAGE_TABLE) / PAGE_SIZE * PAGE_SIZE, GFP_KERNEL);
+    if (!page_table)
+    {
+        LOG_ERR("Failed to allocate memory for EPT page table");
+        goto ERR;
+    }
+    memset(page_table, 0, sizeof(VMM_EPT_PAGE_TABLE));
+
+    // isPageAligned(&page_table->PML4[0]);
+    // isPageAligned(&page_table->PML3[0]);
+    // isPageAligned(&page_table->PML2[0]);
+
+    // isPageAligned(__pa(&page_table->PML4[0]));
+    // isPageAligned(__pa(&page_table->PML3[0]));
+    // isPageAligned(__pa(&page_table->PML2[0]));
+
+    initVMM_EPT_PAGE_TABLE(ept_state, page_table);
 
     return page_table;
 
@@ -590,8 +651,7 @@ PEPT_PML1_ENTRY eptGetPml1Entry(PVMM_EPT_PAGE_TABLE EptPageTable, u64 guest_phys
 
 bool eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
                        void *PreAllocatedBuffer,
-                       u64 PhysicalAddres,
-                       u32 cpu)
+                       u64 PhysicalAddres)
 {
     PEPT_PML2_ENTRY target_entry_pml2 = eptGetPml2Entry(EptPageTable, PhysicalAddres);
 
@@ -607,9 +667,6 @@ bool eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     {
         return true;
     }
-
-    // free previous buffer
-    g_guest_state[cpu].PreAllocatedMemoryDetails.PreAllocatedBuffer = NULL;
 
     // Allocate PML1 entries
     PVMM_EPT_DYNAMIC_SPLIT new_split = (PVMM_EPT_DYNAMIC_SPLIT)PreAllocatedBuffer;
@@ -643,8 +700,8 @@ bool eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     pml2_pointer.Fields.Execute = 1;
     pml2_pointer.Fields.PhysicalAddress = __pa(&new_split->PML1[0]) >> 12;
 
-    // insert
-    list_add(&EptPageTable->DynamicSplitList, &new_split->DynamicSplitList);
+    // insert at the end of the list
+    list_add_tail(&new_split->DynamicSplitList, &EptPageTable->DynamicSplitList);
 
     target_entry_pml2->All = pml2_pointer.All;
     return true;
@@ -661,7 +718,7 @@ bool eptVmxRootModePageHook(PEPT_STATE ept_state, void *target_func, bool has_la
         return false;
     }
 
-    void *target_virt_addr = PAGE_ALIGN(target_func);
+    void *target_virt_addr = PAGE_ALIGN_BOUND(target_func);
     u64 target_phy_addr = __pa(target_virt_addr);
 
     if (!target_phy_addr)
@@ -672,11 +729,13 @@ bool eptVmxRootModePageHook(PEPT_STATE ept_state, void *target_func, bool has_la
 
     void *target_buffer = g_guest_state[cpu].PreAllocatedMemoryDetails.PreAllocatedBuffer;
 
-    if (!eptSplitLargePage(ept_state->EptPageTable, target_buffer, target_phy_addr, cpu))
+    if (!eptSplitLargePage(ept_state->EptPageTable, target_buffer, target_phy_addr))
     {
         LOG_ERR("eptSplitLargePage failed");
         return false;
     }
+    // free previous buffer
+    g_guest_state[cpu].PreAllocatedMemoryDetails.PreAllocatedBuffer = NULL;
 
     PEPT_PML1_ENTRY target_entry_pml1 = eptGetPml1Entry(ept_state->EptPageTable, target_phy_addr);
     if (target_entry_pml1 == NULL)
@@ -773,3 +832,60 @@ int handleEPTViolation(PGUEST_REGS GuestRegs, u64 ExitQualification, u64 guest_p
 
     return 0;
 }
+
+int eptInsertMemRegion(PEPT_STATE ept_state,
+                       bool has_launched,
+                       struct HV_USERSPACE_MEM_REGION region)
+{
+    // TODO 这里需要考虑的情况超级多，这里的实现啥都没有考虑
+    // 1. size 超过 512 * 4K 的情况。因为一次分裂仅支持 512 * 4K大小的物理页
+    // 2. 内核空间实际上是无法拿到用户空间的虚拟地址的物理地址的，因为从用户空间切换到内核空间会发生CR3的转换
+    u64 gpa = PAGE_ALIGN_BOUND(region.guest_phys_addr);
+    u64 guest_end_addr = PAGE_ALIGN_UPPER(region.guest_phys_addr + region.size);
+
+    while (gpa < guest_end_addr)
+    {
+        void *PreAllocatedBuffer = kmalloc(sizeof(VMM_EPT_DYNAMIC_SPLIT), GFP_KERNEL);
+        if (!eptSplitLargePage(ept_state->EptPageTable,
+                               PreAllocatedBuffer,
+                               PAGE_ALIGN_BOUND(gpa)))
+        {
+            LOG_ERR("eptSplitLargePage failed. guest_phys_addr: 0x%llx", gpa);
+            return -1;
+        }
+
+
+        u64 hva = __get_free_pages(GFP_KERNEL, 9); // (2^9) * 4K
+        copy_from_user((void *)hva, (void *)(region.userspace_addr + (gpa - region.guest_phys_addr)), 512 * PAGE_SIZE);
+
+        // u64 hva = region.userspace_addr + (gpa - region.guest_phys_addr);
+
+        for (int i = 0; i < 512; i++)
+        {
+            PEPT_PML1_ENTRY target_entry_pml1 = eptGetPml1Entry(ept_state->EptPageTable, gpa);
+            PEPT_PML2_ENTRY target_entry_pml2 = eptGetPml2Entry(ept_state->EptPageTable, gpa);
+            EPT_PML2_POINTER pml2 = {target_entry_pml2->All};
+
+            if (target_entry_pml1 == NULL)
+            {
+                LOG_ERR("target_entry_pml1 is NULL");
+                return -1;
+            }
+
+            u64 hpa = __pa(hva);
+            // target_entry_pml1->All = 0;
+            target_entry_pml1->Fields.Write = 1;
+            target_entry_pml1->Fields.Read = 1;
+            target_entry_pml1->Fields.Execute = 1;
+            target_entry_pml1->Fields.EPTMemoryType = 0;
+            // target_entry_pml1->Fields.DirtyFlag = 0;
+            target_entry_pml1->Fields.PhysicalAddress = hpa >> 12;
+
+            gpa += PAGE_SIZE;
+            hva += PAGE_SIZE;
+        }
+    }
+
+    return 0;
+}
+

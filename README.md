@@ -5,6 +5,7 @@
 * [CPU Registers x86_64](https://wiki.osdev.org/CPU_Registers_x86-64)
 * [VMCS-Auditor](https://github.com/SinaKarvandi/VMCS-Auditor)
 * [Intel VT学习笔记](https://blog.csdn.net/qq_41988448/category_11624333.html)
+* [RVM-tutorial](https://github.com/equation314/RVM-Tutorial)
 
 ## qemu安装虚拟机
 
@@ -367,17 +368,6 @@ EPT paging structure必须是物理连续的空间，因此坚决不能使用vma
 
 ## SMP
 
-### IRQ
-
-An IRQ is an interrupt request from a device. Currently they can come in over a pin, or over a packet. Several devices may be connected to the same pin thus sharing an IRQ.
-
-An IRQ number is a kernel identifier used to talk about a hardware interrupt source. Typically this is an index into the global irq_desc array, but except for what linux/interrupt.h implements the details are architecture specific.
-
-An IRQ number is an enumeration of the possible interrupt sources on a machine. Typically what is enumerated is the number of input pins on all of the interrupt controller in the system. In the case of ISA what is enumerated are the 16 input pins on the two i8259 interrupt controllers.
-
-Architectures can assign additional meaning to the IRQ numbers, and are encouraged to in the case where there is any manual configuration of the hardware involved. The ISA IRQs are a classic example of assigning this kind of additional meaning.
-
-* [Interrupts linux labs](https://linux-kernel-labs.github.io/refs/heads/master/lectures/interrupts.html)
 
 ### 禁用抢占
 
@@ -388,7 +378,92 @@ Architectures can assign additional meaning to the IRQ numbers, and are encourag
 `local_irq_disable` or `local_irq_save` disable interrupts for the local cpu. this means that the local cpu will not react to any irqs, so it will not run any interrupt return paths and hence, cannot run softirqs there.
 
 ```cpp
+
 #define get_cpu() ({ preempt_disable(); smp_processor_id(); })
 #define smp_processor_id() raw_smp_processor_id()
 #define put_cpu() preempt_enable()
 ```
+
+
+## Event Injection
+
+### 中断与异常
+
+中断（Interrupt）和异常（Exception）是指明系统、处理器或当前执行程序（或任务）的某处出现一 个事件，该事件需要处理器进行处理。通常，这种事件会导致执行控制被强迫从当前运行程序转移到被称 为中断处理程序（interrupt handler）或异常处理程序（exception handler）的特殊软件函数或任务中。处理 器响应中断或异常所采取的行动被称为中断/异常服务（处理）。 
+
+通常，中断发生在程序执行的随机时刻，以响应硬件发出的信号。系统硬件使用中断来处理外部事件， 例如要求为外部设备提供服务。当然，软件也能通过执行 INT n 指令产生中断。 
+
+异常发生在处理器执行一条指令时，检测到一个出错条件时发生，例如被 0 除出错条件。处理器可以 检测到各种出错条件，包括违反保护机制、页错误以及机器内部错误。异常可以被细分为故障（faults）、陷阱（traps）和中止（aborts）。
+
+一般情况下，可以认为中断都是异步的，异常都是同步的。特殊的是，INT n指令产生的中断是同步的。
+
+外部中断通过处理器芯片上两个引脚（INTR 和 NMI（Non-maskable interupt））接收。当引脚 INTR 接收到外部发生的中断信 号时，处理器就会从系统总线上读取外部中段控制器（例如 8259A）提供的中断向量号。当引脚 NMI 接 收到信号时，就产生一个非屏蔽中断。它使用固定的中断向量号 2。任何通过处理器 INTR 引脚接收的外 部中断都被称为可屏蔽硬件中断，包括中断向量号 0 到 255。标志寄存器 EFLAGS 中的 IF 标志可用来屏 蔽所有这些硬件中断。
+
+INT n 指令可用于在软件中模拟指定的异常，但有一个限制。如果 INT 指令中的操作数 n 是 80X86 异 常的向量号之一，那么处理器将为该向量号产生一个中断，该中断就会去执行与该向量有关的异常处理程 序。但是因为这实际上是一个中断，所以处理器并不会把一个错误号压入堆栈，即使硬件产生的该向量相 关的中断通常会产生一个错误码。对于那些会产生错误码的异常，异常的处理程序会试图从堆栈上弹出错 误码。因此，如果使用 INT 指令来模拟产生一个异常，处理程序则会把 EIP（正好处于缺少的错误码位置 处）弹出堆栈，从而会造成返回位置错误。
+
+![](./images/保护模式下的异常与中断.png)
+
+
+#### 异常分类
+* fault是一种通常可以被纠正的异常，并且一旦被纠正程序就可以继续运行。当出现一个 Fault， 处理器会把机器状态恢复到产生 Fault 的指令之前的状态。此时异常处理程序的返回地址会指向 产生 Fault 的指令，而不是其后面一条指令。因此在返回后产生 Fault 的指令将被重新执行。
+* Trap 是一个引起陷阱的指令被执行后立刻会报告的异常。Trap 也能够让程序或任务连贯地执行。 Trap 处理程序的返回地址指向引起陷阱指令的随后一条指令，因此在返回后会执行下一条指令。
+* Abort 是一种不会总是报告导致异常的指令的精确位置的异常，并且不允许导致异常的程序重新 继续执行。Abort 用于报告严重错误，例如硬件错误以及系统表中存在不一致性或非法值。
+
+#### 异常与中断处理
+
+![](./images/转移到中断处理过程时堆栈使用方法.png)
+
+### IRQ
+
+An IRQ is an interrupt request from a device. Currently they can come in over a pin, or over a packet. Several devices may be connected to the same pin thus sharing an IRQ.
+
+An IRQ number is a kernel identifier used to talk about a hardware interrupt source. Typically this is an index into the global irq_desc array, but except for what linux/interrupt.h implements the details are architecture specific.
+
+An IRQ number is an enumeration of the possible interrupt sources on a machine. Typically what is enumerated is the number of input pins on all of the interrupt controller in the system. In the case of ISA what is enumerated are the 16 input pins on the two i8259 interrupt controllers.
+
+Architectures can assign additional meaning to the IRQ numbers, and are encouraged to in the case where there is any manual configuration of the hardware involved. The ISA IRQs are a classic example of assigning this kind of additional meaning.
+
+
+
+
+```cpp
+typedef union _INTERRUPT_INFO {
+    // VOL3 25.8.3 VM-Entry Controls for Event Injection
+	struct {
+		u32 Vector : 8;
+		/* 0=Ext Int, 1=Rsvd, 2=NMI, 3=Exception, 4=Soft INT,
+		 * 5=Priv Soft Trap, 6=Unpriv Soft Trap, 7=Other */
+		u32 InterruptType : 3;
+		u32 DeliverErrorCode : 1;  /* 0=Do not deliver, 1=Deliver */
+		u32 Reserved : 19;
+		u32 Valid : 1;         /* 0=Not valid, 1=Valid. Must be checked first */
+	};
+	u32 Flags;
+} INTERRUPT_INFO, * PINTERRUPT_INFO;
+```
+
+The interruption type (bits 10:8) determines details of how the injection is performed. In general, a VMM 
+should use the type hardware exception for all exceptions other than the following:
+* breakpoint exceptions (#BP; a VMM should use the type software exception);
+* overflow exceptions (#OF a VMM should use the use type software exception); and
+* those debug exceptions (#DB) that are generated by INT1 (a VMM should use the use type privileged 
+software exception).2
+
+
+
+### Monitor Trap Flag(MTF)
+
+Monitor Trap Flag (MTF) is a flag specifically designed for single-stepping in x86/Intel hardware virtualization VT-x technology. When MTF is set, the guest will trigger a VM Exit after executing each instruction (need to consider NMI or other interrupt delivery boundary). This paper presents an idea to use MTF for memory write allowing when monitoring modification to guest virtual-to-physical mapping (page table entries) tables. 
+
+
+### 参考文献
+
+* VOL1 6.5.1 Call and Return Operation for Interrupt or Exception Handling Procedures
+* [Interrupts linux labs](https://linux-kernel-labs.github.io/refs/heads/master/lectures/interrupts.html)
+* 25.8.3 VM-Entry Controls for Event Injection
+* VOL3 27.6 EVENT INJECTION
+* [Double fault wikipedia](https://en.wikipedia.org/wiki/Double_fault)
+* linux内核完全注释 4.6 中断和异常处理
+* VOL3 25.9.2 Information for VM Exits Due to Vectored Events
+* [Monitor Trap Flag (MTF) Usage in EPT-based Guest Physical Memory Monitoring](http://hypervsir.blogspot.com/2014/11/monitor-trap-flag-mtf-usage-in-ept.html)
+* VOL3 26.5.2 Monitor Trap Flag

@@ -2,6 +2,7 @@
 #include "../include/vmx_inst.h"
 #include "../include/vmx.h"
 #include "../include/vmcall.h"
+#include "../include/events.h"
 
 #define HYPERV_CPUID_VENDOR_AND_MAX_FUNCTIONS 0x40000000
 #define HYPERV_CPUID_INTERFACE 0x40000001
@@ -23,7 +24,7 @@ void backHost(void)
     int cpu = smp_processor_id();
     __asm__ __volatile__(
         "movq %0, %%rsp\n\t" // 恢复 rsp
-        "jmp %1"//跳转回宿主机
+        "jmp %1"             // 跳转回宿主机
         :
         : "m"(g_guest_state[cpu].back_host_rsp),
           "m"(g_guest_state[cpu].back_host_rip));
@@ -318,6 +319,15 @@ void handleVmcall(PGUEST_REGS GuestRegs)
     }
 }
 
+void handleHLT(void)
+{
+    LOG_INFO("[*] Execution of HLT detected... \n");
+    EPTP ept_pointer = {0};
+    vmread(EPT_POINTER, (u64*)(&ept_pointer));
+    // eptClearPaging(ept_pointer); //TODO 老是出错
+    backHost();
+}
+
 void VmResumeInstruction(void)
 {
 
@@ -349,6 +359,14 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     ret = vmread(VM_EXIT_REASON, &ExitReason);
     vmreadError(ret);
 
+    if (ExitReason & 0x80000000)
+    {
+        // vmlaunch error
+        LOG_INFO("vmlaunch error 0x%llx\n", ExitReason);
+        backHost();
+        return -1;
+    }
+
     u64 ExitQualification = 0;
     ret = vmread(EXIT_QUALIFICATION, &ExitQualification);
     vmreadError(ret);
@@ -362,7 +380,7 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     vmreadError(ret);
 
     LOG_INFO("VM_EXIT_REASION 0x%llx\n", ExitReason & 0xffff);
-    LOG_INFO("XIT_QUALIFICATION 0x%llx\n", ExitQualification);
+    LOG_INFO("EXIT_QUALIFICATION 0x%llx\n", ExitQualification);
     LOG_INFO("GUEST_RIP 0x%llx\n", guest_rip);
     LOG_INFO("GUEST_RSP 0x%llx\n", guest_rsp);
 
@@ -377,6 +395,19 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
         // VMCALL, VMCLEAR, VMLAUNCH, VMPTRLD, VMPTRST, VMRESUME, VMXOFF, and VMXON.
         //
     case EXIT_REASON_EXCEPTION_NMI:
+    {
+        VMEXIT_INTERRUPT_INFO info = {0};
+        vmread(VM_EXIT_INTR_INFO, (u64 *)&info);
+        if (INTERRUPT_TYPE_SOFTWARE_EXCEPTION == info.InterruptionType)
+        {
+            if (EXCEPTION_VECTOR_BREAKPOINT == info.Vector)
+            {
+                // Do whatever, e.g re-inject the breakpoint exception
+            }
+        }
+        break;
+    }
+    case EXIT_REASON_EXTERNAL_INTERRUPT:
     {
         break;
     }
@@ -420,8 +451,7 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     }
     case EXIT_REASON_HLT:
     {
-        LOG_INFO("[*] Execution of HLT detected... \n");
-
+        handleHLT();
         break;
     }
 
@@ -447,6 +477,10 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
         handleCRAccess(GuestRegs);
         break;
     }
+    case EXIT_REASON_IO_INSTRUCTION:
+    {
+        break;
+    }
 
     case EXIT_REASON_MSR_READ:
     {
@@ -459,7 +493,12 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
         handleMsrWrite(GuestRegs);
         break;
     }
-
+    case EXIT_REASON_MONITOR_TRAP_FLAG:
+    {
+        // 不能直接跳转到下一条指令，必须要重新执行当前指令
+        // 因此 GUIST_RIP 不需要增加
+        break;
+    }
     case EXIT_REASON_EPT_VIOLATION:
     {
         u64 guest_phy_addr = 0;
@@ -468,11 +507,13 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
 
         break;
     }
-    case EXIT_REASON_IO_INSTRUCTION:
+    case EXIT_REASON_EPT_MISCONFIG:
     {
+        // VOL3 29.3.3.1 EPT Misconfigurations
+        u64 guest_phy_addr = 0;
+        vmread(GUEST_PHYSICAL_ADDRESS, &guest_phy_addr);
         break;
     }
-
     default:
     {
         // BREAKPOINT();
@@ -488,7 +529,7 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     ret = vmwrite(GUEST_RIP, guest_rip);
     if (ret != 0)
     {
-        LOG_INFO("vmwrite error %llx\n", ret);
+        LOG_INFO("vmwrite error 0x%llx\n", ret);
     }
 
     if (status != 0)

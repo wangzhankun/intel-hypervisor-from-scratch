@@ -7,7 +7,9 @@
 #include "./types.h"
 
 #define PAGE_MASK           (~(PAGE_SIZE - 1))
-#define PAGE_ALIGN(addr)    (((u64)(addr) + PAGE_SIZE - 1) & PAGE_MASK)
+#define PAGE_ALIGN_UPPER(addr)    (((u64)(addr) + PAGE_SIZE - 1) & PAGE_MASK) // 向上取整
+#define PAGE_ALIGN_BOUND(addr)    (((u64)(addr)) & PAGE_MASK) // 向下取整
+
 
 #define MODULENAME "myhypervisor"
 

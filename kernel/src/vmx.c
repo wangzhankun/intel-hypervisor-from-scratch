@@ -9,11 +9,12 @@
 #include "../include/reg.h"
 #include <asm/msr.h>
 #include "../include/cpu_features.h"
+#include "../include/events.h"
 
 VIRTUAL_MACHINE_STATE g_guest_state[32]; // 可以使用 DECLARE_EACH_CPU代替
 static cpumask_var_t cpus_hardware_enabled;
 
-extern void VmentryHandler(void); // defined in VmentryHandler.s
+extern void guestEntry(void); // defined in guest_code.s
 
 extern void VmexitHandler(void); // defined in VmexitHandler.s
 
@@ -116,6 +117,22 @@ ERR:
     return false;
 }
 
+static int clearVMCSState(VIRTUAL_MACHINE_STATE *guest_state)
+{
+    if (!guest_state || !guest_state->VmcsRegionPhyAddr)
+        return -1;
+
+    return vmclear(guest_state->VmcsRegionPhyAddr);
+}
+
+static int loadVMCS(VIRTUAL_MACHINE_STATE *guest_state)
+{
+    if (!guest_state || !guest_state->VmcsRegionPhyAddr)
+        return -1;
+
+    return vmptrld((guest_state->VmcsRegionPhyAddr));
+}
+
 static void __exitVMXOnCpu(int cpu)
 {
     LOG_INFO("Terminating VMX on CPU %d", cpu);
@@ -128,6 +145,8 @@ static void __exitVMXOnCpu(int cpu)
         return;
     }
 
+    clearVMCSState(guest_state);
+
     disableVMX();
 
     destructVirtualMachineState(guest_state);
@@ -139,34 +158,6 @@ static void _exitVMX(void *unused)
     int cpu = raw_smp_processor_id();
 
     __exitVMXOnCpu(cpu);
-}
-
-static void _initVMX(void *unused)
-{
-    int cpu = raw_smp_processor_id();
-    if (cpumask_test_cpu(cpu, cpus_hardware_enabled))
-        return;
-    cpumask_set_cpu(cpu, cpus_hardware_enabled);
-
-    LOG_INFO("Initializing VMX on CPU %d", cpu);
-
-    VIRTUAL_MACHINE_STATE *guest_state = &g_guest_state[cpu];
-
-    if (!constructVirtualMachineState(guest_state))
-    {
-        LOG_ERR("Failed to construct virtual state on CPU %d", cpu);
-        goto ERR;
-    }
-
-    if (enableVMX(guest_state) == false)
-    {
-        LOG_ERR("Failed to enable VMX on CPU %d", cpu);
-        goto ERR;
-    }
-    return;
-ERR:
-    __exitVMXOnCpu(cpu);
-    return;
 }
 
 void exitVMX(PEPT_STATE ept_state)
@@ -182,59 +173,6 @@ void exitVMX(PEPT_STATE ept_state)
 
     destoryEPT2(ept_state); // early consturct, late destruct
     ept_state = NULL;
-}
-
-PEPT_STATE initVMX(void)
-{
-
-    for (int i = 0; i < 32; i++)
-    {
-        memset(&g_guest_state[i], 0, sizeof(VIRTUAL_MACHINE_STATE));
-    }
-
-    PEPT_STATE ept_state = initEPT2();
-    if (ept_state == NULL)
-    {
-        LOG_ERR("init ept operation failed");
-        return NULL;
-    }
-    ////////////////////ept page hook example
-    // eptPageHook(kmalloc, false);
-    //////////////////////
-
-    if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
-    {
-        LOG_ERR("Failed to allocate cpumask");
-        goto ERR;
-    }
-
-    on_each_cpu((smp_call_func_t)_initVMX, NULL, 1);
-    int cpu_num = cpumask_weight(cpus_hardware_enabled);
-    LOG_INFO("VMX is enabled on %d CPUs", cpu_num);
-    if (cpu_num == num_online_cpus())
-    {
-        return ept_state;
-    }
-
-ERR:
-    exitVMX(ept_state);
-    return NULL;
-}
-
-static int clearVMCSState(VIRTUAL_MACHINE_STATE *guest_state)
-{
-    if (!guest_state || !guest_state->VmcsRegionPhyAddr)
-        return -1;
-
-    return vmclear(guest_state->VmcsRegionPhyAddr);
-}
-
-static int loadVMCS(VIRTUAL_MACHINE_STATE *guest_state)
-{
-    if (!guest_state || !guest_state->VmcsRegionPhyAddr)
-        return -1;
-
-    return vmptrld((guest_state->VmcsRegionPhyAddr));
 }
 
 BOOL getSegmentDescriptor(PSEGMENT_SELECTOR SegmentSelector,
@@ -312,204 +250,221 @@ uint32_t AdjustControls(uint32_t ctl, uint32_t msr)
 
 void initVmcsControlFields(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
 {
-    vmwrite(TSC_OFFSET, 0);
-    vmwrite(TSC_OFFSET_HIGH, 0);
+    // VOL3 Table 25-7. Definitions of Secondary Processor-Based VM-Execution Controls
+    //  enable EPT
+    vmwrite(SECONDARY_VM_EXEC_CONTROL, AdjustControls(
+                                           SECONDARY_EXEC_ENABLE_RDTSCP                        //
+                                               | SECONDARY_EXEC_ENABLE_EPT                     //
+                                               | SECONDARY_EXEC_ENABLE_INVPCID                 //
+                                           ,
+                                           MSR_IA32_VMX_PROCBASED_CTLS2));
 
-    // Link Shadow VMCS
-    vmwrite(VMCS_LINK_POINTER, ~0ULL);
-    vmwrite(VMCS_LINK_POINTER_HIGH, ~0ULL);
+    // VOL3 Table 25-5. Definitions of Pin-Based VM-Execution Controls
+    //  这里设置了 NMI exiting 和 external interrupt exiting
+    vmwrite(PIN_BASED_VM_EXEC_CONTROL, AdjustControls(
+                                           PIN_BASED_NMI_EXITING,
+                                           MSR_IA32_VMX_TRUE_PINBASED_CTLS));
 
-    uint32_t sec_exec_ctl = 0;
+    // VOL3 Table 25-6. Definitions of Primary Processor-Based VM-Execution Controls (Contd.)
+    vmwrite(CPU_BASED_VM_EXEC_CONTROL, AdjustControls(
+                                           CPU_BASED_USE_MSR_BITMAPS                                                                     //
+                                               | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS | CPU_BASED_HLT_EXITING | CPU_BASED_PAUSE_EXITING //
+                                               | CPU_BASED_CR3_LOAD_EXITING | CPU_BASED_CR3_STORE_EXITING,
+                                           MSR_IA32_VMX_TRUE_PROCBASED_CTLS));
 
-    // vmwrite(VIRTUAL_PROCESSOR_ID, 0);
-    // vmwrite(POSTED_INTR_NV, 0);
+    
 
-    vmwrite(PIN_BASED_VM_EXEC_CONTROL, AdjustControls(0, MSR_IA32_VMX_TRUE_PINBASED_CTLS));
-
-    vmwrite(CPU_BASED_VM_EXEC_CONTROL, AdjustControls(CPU_BASED_USE_MSR_BITMAPS | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS, MSR_IA32_VMX_PROCBASED_CTLS));
-
-    vmwrite(EXCEPTION_BITMAP, 0);
-    vmwrite(PAGE_FAULT_ERROR_CODE_MASK, 0);
-    vmwrite(PAGE_FAULT_ERROR_CODE_MATCH, 0);
-    vmwrite(CR3_TARGET_COUNT, 0);
-    vmwrite(VM_EXIT_CONTROLS, get_msr(MSR_IA32_VMX_EXIT_CTLS) |
-                                  VM_EXIT_HOST_ADDR_SPACE_SIZE); /* 64-bit host */
+    // SWITCH TO 64BIT HOST
+    vmwrite(VM_EXIT_CONTROLS, AdjustControls(
+        VM_EXIT_HOST_ADDR_SPACE_SIZE//
+        | VM_EXIT_SAVE_IA32_PAT//
+        | VM_EXIT_LOAD_IA32_PAT//
+        | VM_EXIT_SAVE_IA32_EFER//
+        | VM_EXIT_LOAD_IA32_EFER//
+        ,
+        MSR_IA32_VMX_EXIT_CTLS
+    )); /* 64-bit host */
     vmwrite(VM_EXIT_MSR_STORE_COUNT, 0);
     vmwrite(VM_EXIT_MSR_LOAD_COUNT, 0);
-    vmwrite(VM_ENTRY_CONTROLS, get_msr(MSR_IA32_VMX_ENTRY_CTLS) |
-                                   VM_ENTRY_IA32E_MODE); /* 64-bit guest */
+
+    // switch to 64bit guest
+    vmwrite(VM_ENTRY_CONTROLS, AdjustControls(
+        VM_ENTRY_IA32E_MODE//
+        | VM_ENTRY_LOAD_IA32_PAT//
+        | VM_ENTRY_LOAD_IA32_EFER//
+        ,
+        MSR_IA32_VMX_ENTRY_CTLS
+    )); /* 64-bit guest */
     vmwrite(VM_ENTRY_MSR_LOAD_COUNT, 0);
-    vmwrite(VM_ENTRY_INTR_INFO_FIELD, 0);
-    vmwrite(TPR_THRESHOLD, 0);
 
-    vmwrite(CR0_GUEST_HOST_MASK, 0);
-    vmwrite(CR4_GUEST_HOST_MASK, 0);
-    vmwrite(CR0_READ_SHADOW, get_cr0());
-    vmwrite(CR4_READ_SHADOW, get_cr4());
-
-    vmwrite(MSR_BITMAP, guest_state->MsrBitmapPhysical);
+    vmwrite(MSR_BITMAP, 0);
+    vmwrite(IO_BITMAP_A, 0);
+    vmwrite(IO_BITMAP_B, 0);
     // 设置EPT
     vmwrite(EPT_POINTER, ept_state->EptPointer.All);
-    vmwrite(EPT_POINTER_HIGH, ept_state->EptPointer.All >> 32);
-    vmwrite(CPU_BASED_VM_EXEC_CONTROL, AdjustControls(CPU_BASED_ACTIVATE_SECONDARY_CONTROLS, MSR_IA32_VMX_PROCBASED_CTLS));
-    // enable EPT
-    vmwrite(SECONDARY_VM_EXEC_CONTROL, AdjustControls(
-                                           SECONDARY_EXEC_ENABLE_RDTSCP | SECONDARY_EXEC_ENABLE_EPT |
-                                               SECONDARY_EXEC_ENABLE_INVPCID | SECONDARY_ENABLE_XSAV_RESTORE,
-                                           MSR_IA32_VMX_PROCBASED_CTLS2));
+    
+    // VOL3 25.6.3 Exception Bitmap
+    // VOL3 26.2 OTHER CAUSES OF VM EXIT
+    // 这里的bit如何设置参见 README.md 中保护模式下的异常和中断图
+    vmwrite(EXCEPTION_BITMAP, (1ULL << 0)        // divide error
+                                  | (1ULL << 1)  // debug exception
+                                                 //   | (1ULL << 2)  // NMI
+                                  | (1ULL << 3)  // breakpoint exception
+                                  | (1ULL << 14) // page fault
+    );                                           // breakpoint and debug exception
+
+    // vmwrite(EXCEPTION_BITMAP, 0);
+
 }
 
-void initVmcsHostState(void)
+void initVmcsHostState(uint64_t host_rsp, uint64_t host_rip)
 {
-    uint32_t exit_controls = vmreadz(VM_EXIT_CONTROLS);
 
-    vmwrite(HOST_ES_SELECTOR, get_es() & 0XF8);
-    vmwrite(HOST_CS_SELECTOR, get_cs() & 0XF8);
-    vmwrite(HOST_SS_SELECTOR, get_ss() & 0XF8);
-    vmwrite(HOST_DS_SELECTOR, get_ds() & 0XF8);
-    vmwrite(HOST_FS_SELECTOR, get_fs() & 0XF8);
-    vmwrite(HOST_GS_SELECTOR, get_gs() & 0XF8);
-    vmwrite(HOST_TR_SELECTOR, get_tr() & 0XF8);
+    vmwrite(HOST_ES_SELECTOR, get_es());
+    vmwrite(HOST_CS_SELECTOR, get_cs());
+    vmwrite(HOST_SS_SELECTOR, get_ss());
+    vmwrite(HOST_DS_SELECTOR, get_ds());
+    vmwrite(HOST_FS_SELECTOR, get_fs());
+    vmwrite(HOST_GS_SELECTOR, get_gs());
+    vmwrite(HOST_TR_SELECTOR, get_tr());
 
-    if (exit_controls & VM_EXIT_LOAD_IA32_PAT)
-        vmwrite(HOST_IA32_PAT, get_msr(MSR_IA32_CR_PAT));
-    if (exit_controls & VM_EXIT_LOAD_IA32_EFER)
-        vmwrite(HOST_IA32_EFER, get_msr(MSR_EFER));
-    if (exit_controls & VM_EXIT_LOAD_IA32_PERF_GLOBAL_CTRL)
-        vmwrite(HOST_IA32_PERF_GLOBAL_CTRL,
-                get_msr(MSR_CORE_PERF_GLOBAL_CTRL));
-
-    vmwrite(HOST_IA32_SYSENTER_CS, get_msr(MSR_IA32_SYSENTER_CS));
-
-    vmwrite(HOST_CR0, get_cr0());
-    vmwrite(HOST_CR3, get_cr3());
-    vmwrite(HOST_CR4, get_cr4());
     vmwrite(HOST_FS_BASE, get_msr(MSR_FS_BASE));
     vmwrite(HOST_GS_BASE, get_msr(MSR_GS_BASE));
     vmwrite(HOST_TR_BASE,
             get_desc64_base((struct desc64 *)(get_gdt().address + get_tr())));
     vmwrite(HOST_GDTR_BASE, get_gdt().address);
     vmwrite(HOST_IDTR_BASE, get_idt().address);
-    vmwrite(HOST_IA32_SYSENTER_ESP, get_msr(MSR_IA32_SYSENTER_ESP));
-    vmwrite(HOST_IA32_SYSENTER_EIP, get_msr(MSR_IA32_SYSENTER_EIP));
+
+    vmwrite(HOST_IA32_PAT, get_msr(MSR_IA32_CR_PAT));
+    vmwrite(HOST_IA32_EFER, get_msr(MSR_EFER));
+    // vmwrite(HOST_IA32_PERF_GLOBAL_CTRL,
+    //         get_msr(MSR_CORE_PERF_GLOBAL_CTRL));
+
+
+    vmwrite(HOST_CR0, get_cr0());
+    vmwrite(HOST_CR3, get_cr3() & 0x000ffffffffff000 );
+    vmwrite(HOST_CR4, get_cr4());
+
+
+    vmwrite(HOST_IA32_SYSENTER_ESP, 0);
+    vmwrite(HOST_IA32_SYSENTER_EIP, 0);
+    vmwrite(HOST_IA32_SYSENTER_CS, 0);
+
+    vmwrite(HOST_RSP, host_rsp);
+    vmwrite(HOST_RIP, host_rip);
 }
 
 void initVmcsGuestState(void)
 {
-    vmwrite(GUEST_ES_SELECTOR, vmreadz(HOST_ES_SELECTOR));
-    vmwrite(GUEST_CS_SELECTOR, vmreadz(HOST_CS_SELECTOR));
-    vmwrite(GUEST_SS_SELECTOR, vmreadz(HOST_SS_SELECTOR));
-    vmwrite(GUEST_DS_SELECTOR, vmreadz(HOST_DS_SELECTOR));
-    vmwrite(GUEST_FS_SELECTOR, vmreadz(HOST_FS_SELECTOR));
-    vmwrite(GUEST_GS_SELECTOR, vmreadz(HOST_GS_SELECTOR));
+    vmwrite(GUEST_ES_SELECTOR, 0);
+    vmwrite(GUEST_CS_SELECTOR, 0);
+    vmwrite(GUEST_SS_SELECTOR, 0);
+    vmwrite(GUEST_DS_SELECTOR, 0);
+    vmwrite(GUEST_FS_SELECTOR, 0);
+    vmwrite(GUEST_GS_SELECTOR, 0);
     vmwrite(GUEST_LDTR_SELECTOR, 0);
-    vmwrite(GUEST_TR_SELECTOR, vmreadz(HOST_TR_SELECTOR));
-    vmwrite(GUEST_INTR_STATUS, 0);
-    vmwrite(GUEST_PML_INDEX, 0);
+    vmwrite(GUEST_TR_SELECTOR, 0);
 
-    vmwrite(VMCS_LINK_POINTER, -1ll);
-    vmwrite(GUEST_IA32_DEBUGCTL, get_msr(MSR_IA32_DEBUGCTLMSR) & 0XFFFFFFFF);
-    vmwrite(GUEST_IA32_DEBUGCTL_HIGH, get_msr(MSR_IA32_DEBUGCTLMSR) >> 32);
+    vmwrite(GUEST_ES_LIMIT, 0xffff);
+    vmwrite(GUEST_CS_LIMIT, 0xffff);
+    vmwrite(GUEST_SS_LIMIT, 0xffff);
+    vmwrite(GUEST_DS_LIMIT, 0xffff);
+    vmwrite(GUEST_FS_LIMIT, 0xffff);
+    vmwrite(GUEST_GS_LIMIT, 0xffff);
+    vmwrite(GUEST_LDTR_LIMIT, 0xffff);
+    vmwrite(GUEST_TR_LIMIT, 0xffff);
 
-    vmwrite(GUEST_IA32_PAT, vmreadz(HOST_IA32_PAT));
-    vmwrite(GUEST_IA32_EFER, vmreadz(HOST_IA32_EFER));
-    vmwrite(GUEST_IA32_PERF_GLOBAL_CTRL,
-            vmreadz(HOST_IA32_PERF_GLOBAL_CTRL));
-
-    vmwrite(GUEST_ES_LIMIT, -1);
-    vmwrite(GUEST_CS_LIMIT, -1);
-    vmwrite(GUEST_SS_LIMIT, -1);
-    vmwrite(GUEST_DS_LIMIT, -1);
-    vmwrite(GUEST_FS_LIMIT, -1);
-    vmwrite(GUEST_GS_LIMIT, -1);
-    vmwrite(GUEST_LDTR_LIMIT, -1);
-    vmwrite(GUEST_TR_LIMIT, 0x67);
-    vmwrite(GUEST_GDTR_LIMIT, 0xffff);
-    vmwrite(GUEST_IDTR_LIMIT, 0xffff);
-    vmwrite(GUEST_ES_AR_BYTES,
-            vmreadz(GUEST_ES_SELECTOR) == 0 ? 0x10000 : 0xc093);
-    vmwrite(GUEST_CS_AR_BYTES, 0xa09b);
-    vmwrite(GUEST_SS_AR_BYTES, 0xc093);
-    vmwrite(GUEST_DS_AR_BYTES,
-            vmreadz(GUEST_DS_SELECTOR) == 0 ? 0x10000 : 0xc093);
-    vmwrite(GUEST_FS_AR_BYTES,
-            vmreadz(GUEST_FS_SELECTOR) == 0 ? 0x10000 : 0xc093);
-    vmwrite(GUEST_GS_AR_BYTES,
-            vmreadz(GUEST_GS_SELECTOR) == 0 ? 0x10000 : 0xc093);
-    vmwrite(GUEST_LDTR_AR_BYTES, 0x10000);
-    vmwrite(GUEST_TR_AR_BYTES, 0x8b);
-    vmwrite(GUEST_INTERRUPTIBILITY_INFO, 0);
-    vmwrite(GUEST_ACTIVITY_STATE, 0);
-    vmwrite(GUEST_SYSENTER_CS, vmreadz(HOST_IA32_SYSENTER_CS));
-    vmwrite(VMX_PREEMPTION_TIMER_VALUE, 0);
-
-    vmwrite(GUEST_CR0, vmreadz(HOST_CR0));
-    vmwrite(GUEST_CR3, vmreadz(HOST_CR3));
-    vmwrite(GUEST_CR4, vmreadz(HOST_CR4));
     vmwrite(GUEST_ES_BASE, 0);
     vmwrite(GUEST_CS_BASE, 0);
     vmwrite(GUEST_SS_BASE, 0);
     vmwrite(GUEST_DS_BASE, 0);
-    vmwrite(GUEST_FS_BASE, vmreadz(HOST_FS_BASE));
-    vmwrite(GUEST_GS_BASE, vmreadz(HOST_GS_BASE));
+    vmwrite(GUEST_FS_BASE, 0);
+    vmwrite(GUEST_GS_BASE, 0);
     vmwrite(GUEST_LDTR_BASE, 0);
-    vmwrite(GUEST_TR_BASE, vmreadz(HOST_TR_BASE));
-    vmwrite(GUEST_GDTR_BASE, vmreadz(HOST_GDTR_BASE));
-    vmwrite(GUEST_IDTR_BASE, vmreadz(HOST_IDTR_BASE));
+    vmwrite(GUEST_TR_BASE, 0);
+
+    vmwrite(GUEST_ES_AR_BYTES, 0x93);
+    vmwrite(GUEST_CS_AR_BYTES, 0x209b);
+    vmwrite(GUEST_SS_AR_BYTES, 0x93);
+    vmwrite(GUEST_DS_AR_BYTES, 0x93);
+    vmwrite(GUEST_FS_AR_BYTES, 0x93);
+    vmwrite(GUEST_GS_AR_BYTES, 0x93);
+    vmwrite(GUEST_LDTR_AR_BYTES, 0x82);
+    vmwrite(GUEST_TR_AR_BYTES, 0x8b);
+
+    vmwrite(GUEST_GDTR_BASE, 0);
+    vmwrite(GUEST_IDTR_BASE, 0);
+    vmwrite(GUEST_GDTR_LIMIT, 0xffff);
+    vmwrite(GUEST_IDTR_LIMIT, 0xffff);
+
+
+    // vol3 29.3.6 Page-Modification Logging
+
+    vmwrite(VMCS_LINK_POINTER, -1ll);
+    vmwrite(GUEST_IA32_DEBUGCTL, 0);
+
+    vmwrite(GUEST_IA32_PAT, get_msr(MSR_IA32_CR_PAT));
+    vmwrite(GUEST_IA32_EFER,get_msr(MSR_EFER));
+
+
+    vmwrite(GUEST_INTERRUPTIBILITY_INFO, 0);
+    vmwrite(GUEST_ACTIVITY_STATE, 0);
+    vmwrite(VMX_PREEMPTION_TIMER_VALUE, 0);
+
+    ////////////////CR0/////////////////////
+    // CR0_BITS cr0 = {.Fields = {.PE = 1, .ET = 1, .NE = 1, .PG = 1}};
+    // CR0_BITS cr0_host_mask = {.Fields = {.NW = 1, .NE = 1, .CD = 1}};
+    // CR0_BITS cr0_read_shadow = {.Fields = {.NE = 1}};
+    // vmwrite(GUEST_CR0, cr0.All);
+    // vmwrite(CR0_GUEST_HOST_MASK, cr0_host_mask.All);
+    // vmwrite(CR0_READ_SHADOW, cr0_read_shadow.All);
+
+    vmwrite(GUEST_CR0, get_cr0());
+
+    ////////////////CR3/////////////////////
+    // vmwrite(GUEST_CR3, get_cr3());
+    vmwrite(GUEST_CR3, 0);
+
+    ////////////////CR4////////////////////
+    // CR4_BITS cr4 = {.Fields = {.PAE = 1, .VMXE = 1}};
+    // CR4_BITS cr4_host_mask = {.Fields = {.VMXE = 1}};
+    // vmwrite(GUEST_CR4, 0);
+    // vmwrite(CR4_GUEST_HOST_MASK, cr4_host_mask.All);
+    // vmwrite(CR4_READ_SHADOW, 0);
+    vmwrite(GUEST_CR4, get_cr4());
+
+
+
     vmwrite(GUEST_DR7, 0x400);
-    // vmwrite(GUEST_RSP, (uint64_t)rsp);
-    // vmwrite(GUEST_RIP, (uint64_t)rip);
     vmwrite(GUEST_RFLAGS, 2);
     vmwrite(GUEST_PENDING_DBG_EXCEPTIONS, 0);
-    vmwrite(GUEST_SYSENTER_ESP, vmreadz(HOST_IA32_SYSENTER_ESP));
-    vmwrite(GUEST_SYSENTER_EIP, vmreadz(HOST_IA32_SYSENTER_EIP));
+
+    vmwrite(GUEST_SYSENTER_ESP, 0);
+    vmwrite(GUEST_SYSENTER_EIP, 0);
+    vmwrite(GUEST_SYSENTER_CS, 0);
+
+    vmwrite(GUEST_RSP, 0);
+    vmwrite(GUEST_RIP, 0);
 }
 
-void setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
+void _setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
 {
     initVmcsControlFields(guest_state, ept_state);
     LOG_INFO("initVmcsControlFields success");
-    initVmcsHostState();
+    initVmcsHostState((u64)(guest_state->VmmStack + VMM_STACK_SIZE / 2), (u64)VmexitHandler);
     LOG_INFO("initVmcsHostState success");
     initVmcsGuestState();
     LOG_INFO("initVmcsGuestState success");
-
-    //
-    // left here just for test
-    //
-    vmwrite(GUEST_RSP, (uint64_t)guest_state->VmmStack); // setup guest sp
-    // vmwrite(GUEST_RIP, (uint64_t)g_virtual_guest_memory_address); // setup guest ip
-    vmwrite(GUEST_RIP, VmentryHandler); // setup guest ip
-
-    vmwrite(HOST_RSP, ((uint64_t)guest_state->VmmStack + VMM_STACK_SIZE / 2));
-    vmwrite(HOST_RIP, (uint64_t)VmexitHandler);
 }
 
-void _exitVmOnCPU(int cpu)
+int __launchVmOncpu(void *_guest_state)
 {
-    LOG_INFO("Exiting VM on CPU %d", cpu);
-    if (clearVMCSState(&g_guest_state[cpu]))
-    {
-        LOG_ERR("Failed to clear VMCS state");
-        return;
-    }
-    LOG_INFO("VMCS state cleared\n");
-}
-
-void _exitVm(void *unused)
-{
-    int cpu = smp_processor_id();
-    _exitVmOnCPU(cpu);
-    return;
-}
-
-void __launchVmOncpu(int cpu)
-{
+    VIRTUAL_MACHINE_STATE *guest_state = (VIRTUAL_MACHINE_STATE *)_guest_state;
     // 保存 BACKHERE 的地址，之后退出VM之后需要跳转到 BACKHERE
     __asm__ goto(
         "lea %l[BACKHERE], %%rax\n\t"
         "movq %%rax, %0\n\t"
-        : "=m"(g_guest_state[cpu].back_host_rip)
+        : "=m"(guest_state->back_host_rip)
         :
         : "rax"
         : BACKHERE);
@@ -533,7 +488,7 @@ void __launchVmOncpu(int cpu)
         "pushq %%r14\n\t"
         "pushq %%r15\n\t"
         "movq %%rsp, %0\n\t"
-        : "=m"(g_guest_state[cpu].back_host_rsp)
+        : "=m"(guest_state->back_host_rsp)
         :
         :);
 
@@ -563,17 +518,14 @@ BACKHERE:
         "popfq\n\t"
         :);
 
-    return;
+    return 0;
 }
 
-void _launchVm(void *stack)
+void setupVMCS(PEPT_STATE ept_state)
 {
     int cpu = smp_processor_id();
 
-    PEPT_STATE ept_state = NULL;
-    memcpy(&ept_state, stack + sizeof(int), sizeof(PEPT_STATE));
-
-    LOG_INFO("Launching VM on CPU %d, ept_state = %p", cpu, ept_state);
+    LOG_INFO("Launching VM on CPU %d, ept_state = 0x%llx", cpu, ept_state);
 
     // clearing the VMCS state and loading it as the current VMCS
     if (clearVMCSState(&g_guest_state[cpu]))
@@ -593,7 +545,7 @@ void _launchVm(void *stack)
     LOG_INFO("VMCS loaded\n");
 
     LOG_INFO("setting up VMCS\n");
-    setupVMCS(&g_guest_state[cpu], ept_state);
+    _setupVMCS(&g_guest_state[cpu], ept_state);
 
     return;
 ERR:
@@ -602,38 +554,91 @@ ERR:
     LOG_INFO("vmlaunch returned\n");
     u32 error = vmreadz(VM_INSTRUCTION_ERROR);
     LOG_ERR("Failed to launch VM: %lld", error);
-    _exitVmOnCPU(cpu);
+    // _exitVmOnCPU(cpu);
     return;
 }
 
 void exitVm(PEPT_STATE unused)
 {
-    on_each_cpu((smp_call_func_t)_exitVm, (void *)NULL, 1);
+    // on_each_cpu((smp_call_func_t)_exitVm, (void *)NULL, 1);
     return;
 }
 
 bool launchVm(PEPT_STATE ept_state)
 {
     LOG_INFO("Launching VM on CPUs");
-    char *stack = kmalloc(4096, GFP_KERNEL);
-    if (!stack)
-    {
-        LOG_ERR("Failed to allocate stack");
-        return false;
-    }
-    memset(stack, 0, 4096);
 
-    memcpy(stack + sizeof(int), &ept_state, sizeof(PEPT_STATE));
+    // int cpu = get_cpu(); // 禁用抢占
+    // __launchVmOncpu(cpu);
+    // put_cpu(); // 启用抢占
 
-
-
-    on_each_cpu((smp_call_func_t)_launchVm, (void *)stack, 1);
-
-    kfree(stack);
-
-    int cpu = get_cpu(); // 禁用抢占
-    __launchVmOncpu(cpu);
-    put_cpu(); // 启用抢占
+    smp_call_on_cpu(1, __launchVmOncpu, &(g_guest_state[1]), 1);
 
     return true;
+}
+
+static void _initVMX(void *ept_state)
+{
+    int cpu = raw_smp_processor_id();
+    if (cpumask_test_cpu(cpu, cpus_hardware_enabled))
+        return;
+    cpumask_set_cpu(cpu, cpus_hardware_enabled);
+
+    LOG_INFO("Initializing VMX on CPU %d", cpu);
+
+    VIRTUAL_MACHINE_STATE *guest_state = &g_guest_state[cpu];
+
+    if (!constructVirtualMachineState(guest_state))
+    {
+        LOG_ERR("Failed to construct virtual state on CPU %d", cpu);
+        goto ERR;
+    }
+
+    if (enableVMX(guest_state) == false)
+    {
+        LOG_ERR("Failed to enable VMX on CPU %d", cpu);
+        goto ERR;
+    }
+    setupVMCS((PEPT_STATE)ept_state);
+    return;
+ERR:
+    __exitVMXOnCpu(cpu);
+    return;
+}
+
+PEPT_STATE initVMX(void)
+{
+
+    for (int i = 0; i < 32; i++)
+    {
+        memset(&g_guest_state[i], 0, sizeof(VIRTUAL_MACHINE_STATE));
+    }
+
+    PEPT_STATE ept_state = initEPT2();
+    if (ept_state == NULL)
+    {
+        LOG_ERR("init ept operation failed");
+        return NULL;
+    }
+    ////////////////////ept page hook example
+    // eptPageHook(kmalloc, false);
+    //////////////////////
+
+    if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
+    {
+        LOG_ERR("Failed to allocate cpumask");
+        goto ERR;
+    }
+
+    on_each_cpu((smp_call_func_t)_initVMX, ept_state, 1);
+    int cpu_num = cpumask_weight(cpus_hardware_enabled);
+    LOG_INFO("VMX is enabled on %d CPUs", cpu_num);
+    if (cpu_num == num_online_cpus())
+    {
+        return ept_state;
+    }
+
+ERR:
+    exitVMX(ept_state);
+    return NULL;
 }
