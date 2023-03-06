@@ -514,10 +514,8 @@ typedef struct
 
 extern u64 g_virtual_guest_memory_address;
 
-PEPT_STATE initEPT(void);
 PEPT_STATE initEPT2(void);
 
-void destoryEPT(PEPT_STATE ept_pointer);
 void destoryEPT2(PEPT_STATE ept_state);
 bool eptBuildMtrrMap(EPT_STATE *ept_state);
 bool eptPageHook(PEPT_STATE ept_state, void *TargetFunc, bool has_launched);
@@ -526,9 +524,7 @@ int eptInsertMemRegion(PEPT_STATE ept_state,
                        bool has_launched,
                        struct HV_USERSPACE_MEM_REGION region);
 
-int eptInsertMemRegion2(PEPT_STATE ept_state,
-                        bool has_launched,
-                        struct HV_USERSPACE_MEM_REGION region);
+
 
 int eptCopyGuestData(PEPT_STATE ept_state, struct HV_USERSPACE_MEM_REGION region);
 
