@@ -20,12 +20,10 @@
 // Index of the 4th paging structure (512GB)
 #define ADDRMASK_EPT_PML4_INDEX(_VAR_) ((_VAR_ & 0xFF8000000000ULL) >> 39)
 
-
 uint64_t g_virtual_guest_memory_address = 0;
 extern VIRTUAL_MACHINE_STATE g_guest_state[]; // defined in vmx.c
 
 extern int eptInvept(uint64_t invept_type, void *desc);
-
 
 void destoryEPTPageTable(PVMM_EPT_PAGE_TABLE table)
 {
@@ -110,15 +108,44 @@ void EptSetupPML2Entry(PEPT_STATE ept_state, PEPT_PML2_ENTRY pml2_entry, u32 Pag
     pml2_entry->MemoryType = TargetMemoryType;
 }
 
+void initVMM_EPT_PAGE_TABLE_HostVirt(PEPT_STATE ept_state, PVMM_EPT_PAGE_TABLE page_table)
+{
+    ept_state->is_host_virtual_address_space = true;
+
+    if (isSupportedMTRRAndEPT() == false)
+    {
+        LOG_ERR("MTRR is not supported");
+        goto ERR;
+    }
+    else
+    {
+        LOG_INFO("MTRR is supported");
+        if (!eptBuildMtrrMap(ept_state))
+        {
+            LOG_ERR("Failed to build MTRR map");
+            goto ERR;
+        }
+        LOG_INFO("MTRR map is built");
+    }
+
+    for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++)
+    {
+        for (int j = 0; j < VMM_EPT_PML2E_COUNT; j++)
+        {
+            EptSetupPML2Entry(ept_state, &page_table->PML2[i][j], (i * VMM_EPT_PML2E_COUNT + j));
+        }
+    }
+ERR:
+    return;
+}
+
 /**
  * @brief
  * @param ept_state 可以为NULL
  */
-void initVMM_EPT_PAGE_TABLE(PEPT_STATE ept_state, PVMM_EPT_PAGE_TABLE page_table)
+void initVMM_EPT_PAGE_TABLE(PVMM_EPT_PAGE_TABLE page_table)
 {
     EPT_PML3_POINTER pml3_rwx_template = {0};
-    EPT_PML2_ENTRY pml2_entry_template = {0};
-
 
     // eanch PML4 entry covers 512 GB, so one entry is more than enough
     page_table->PML4[0].Fields.PhysicalAddress = __pa(&page_table->PML3[0]) / PAGE_SIZE;
@@ -134,26 +161,32 @@ void initVMM_EPT_PAGE_TABLE(PEPT_STATE ept_state, PVMM_EPT_PAGE_TABLE page_table
 
     for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++)
     {
-        page_table->PML3[i] = pml3_rwx_template;
-        page_table->PML3[i].Fields.PhysicalAddress = __pa(&page_table->PML2[i][0]) / PAGE_SIZE;
+        page_table->PML3[i].All = __pa(&page_table->PML2[i][0])  | pml3_rwx_template.All;
     }
 
-    // each PML2 entry covers 2 MB
-    // each entry points to a page entry table
-    pml2_entry_template.ReadAccess = 1;
-    pml2_entry_template.WriteAccess = 1;
-    pml2_entry_template.ExecuteAccess = 1;
-    pml2_entry_template.LargePage = 1;
-    pml2_entry_template.MemoryType = MEMORY_TYPE_WRITE_BACK;
+    page_table->PML2[0][0].MemoryType = MEMORY_TYPE_UNCACHEABLE;
+}
 
-    if (ept_state)
+/**
+ * @brief 复位 page table，并且释放掉动态分配的 pml1的 page table的内存
+ */
+void eptClearPaging(PEPT_STATE ept_state)
+{        
+    // 如果是 host virtual address space，那么就不需要释放掉 pml1的 page table的内存
+    // 如果是 guest virtual address space，那么就需要释放掉 pml1的 page table的内存
+    if (ept_state->is_host_virtual_address_space)
     {
+
         for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++)
         {
             for (int j = 0; j < VMM_EPT_PML2E_COUNT; j++)
             {
-                page_table->PML2[i][j].All = pml2_entry_template.All;
-                EptSetupPML2Entry(ept_state, &page_table->PML2[i][j], (i * VMM_EPT_PML2E_COUNT + j));
+                if (ept_state->EptPageTable->PML2[i][j].ReadAccess ||
+                    ept_state->EptPageTable->PML2[i][j].WriteAccess ||
+                    ept_state->EptPageTable->PML2[i][j].ExecuteAccess)
+                {
+                    kfree(ept_state->EptPageTable->PML2[i][j]);
+                }
             }
         }
     }
@@ -163,23 +196,22 @@ void initVMM_EPT_PAGE_TABLE(PEPT_STATE ept_state, PVMM_EPT_PAGE_TABLE page_table
         {
             for (int j = 0; j < VMM_EPT_PML2E_COUNT; j++)
             {
-                page_table->PML2[i][j].All = pml2_entry_template.All | ((u64)(i * VMM_EPT_PML2E_COUNT + j));
+                if (ept_state->EptPageTable->PML2[i][j].ReadAccess ||
+                    ept_state->EptPageTable->PML2[i][j].WriteAccess ||
+                    ept_state->EptPageTable->PML2[i][j].ExecuteAccess)
+                {
+                    EPT_PML2_POINTER pml2 = {ept_state->EptPageTable->PML2[i][j].All};
+
+                    // eptInsertMemRegion 里面就是一次性分配 512 个 page
+                    free_pages((unsigned long)__va(pml2.Fields.PhysicalAddress * PAGE_SIZE), 9);
+
+                    kfree(ept_state->EptPageTable->PML2[i][j]);
+                }
             }
         }
     }
-    page_table->PML2[0][0].MemoryType = MEMORY_TYPE_UNCACHEABLE;
-}
 
-/**
- * @brief 复位 page table，并且释放掉动态分配的 pml1的 page table的内存
- */
-void eptClearPaging(EPTP ept_pointer)
-{
-    // 这是显然的。因为table中的第一个元素就是PML4E
-    // 因此，第一个PML4E的地址就是table的地址
-    PVMM_EPT_PAGE_TABLE table = __va(ept_pointer.Fields.PML4PhysialAddress << 12);
-//TODO
-    // initVMM_EPT_PAGE_TABLE(NULL, table);
+    memset(ept_state->EptPageTable, 0, sizeof(VMM_EPT_PAGE_TABLE));
 }
 
 PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
@@ -195,21 +227,21 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
     }
     memset(page_table, 0, sizeof(VMM_EPT_PAGE_TABLE));
 
-    page_table->PML4[0].Fields.Read = 1;
-    page_table->PML4[0].Fields.Write = 1;
-    page_table->PML4[0].Fields.Execute = 1;
-    page_table->PML4[0].Fields.PhysicalAddress = __pa(&page_table->PML3[0]) / PAGE_SIZE;
+    // page_table->PML4[0].Fields.Read = 1;
+    // page_table->PML4[0].Fields.Write = 1;
+    // page_table->PML4[0].Fields.Execute = 1;
+    // page_table->PML4[0].Fields.PhysicalAddress = __pa(&page_table->PML3[0]) / PAGE_SIZE;
 
-    for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++)
-    {
-        PEPT_PML3_POINTER pml3 = &page_table->PML3[i];
-        pml3->Fields.Read = 1;
-        pml3->Fields.Write = 1;
-        pml3->Fields.Execute = 1;
-        pml3->Fields.PhysicalAddress = __pa(&page_table->PML2[i][0]) >> 12;
-    }
+    // for (int i = 0; i < VMM_EPT_PML3E_COUNT; i++)
+    // {
+    //     PEPT_PML3_POINTER pml3 = &page_table->PML3[i];
+    //     pml3->Fields.Read = 1;
+    //     pml3->Fields.Write = 1;
+    //     pml3->Fields.Execute = 1;
+    //     pml3->Fields.PhysicalAddress = __pa(&page_table->PML2[i][0]) >> 12;
+    // }
 
-    // initVMM_EPT_PAGE_TABLE(ept_state, page_table);
+    initVMM_EPT_PAGE_TABLE(page_table);
 
     return page_table;
 
@@ -232,22 +264,6 @@ PEPT_STATE initEPT2(void)
         goto ERR;
     }
     memset(EptState, 0, sizeof(EPT_STATE));
-
-    if (isSupportedMTRRAndEPT() == false)
-    {
-        LOG_ERR("MTRR is not supported");
-        goto ERR;
-    }
-    else
-    {
-        LOG_INFO("MTRR is supported");
-        if (!eptBuildMtrrMap(EptState))
-        {
-            LOG_ERR("Failed to build MTRR map");
-            goto ERR;
-        }
-        LOG_INFO("MTRR map is built");
-    }
 
     EPTP eptp = {0};
     PVMM_EPT_PAGE_TABLE PageTable;
@@ -391,7 +407,6 @@ bool eptBuildMtrrMap(EPT_STATE *ept_state)
     return true;
 }
 
-
 PEPT_PML2_ENTRY eptGetPml2Entry(PVMM_EPT_PAGE_TABLE EptPageTable, u64 guest_physical_address)
 {
     u64 directory = ADDRMASK_EPT_PML2_INDEX(guest_physical_address);
@@ -459,19 +474,6 @@ int eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     // Point back to the entry in the dynamic split for easy reference for which entry that dynamic split is for.
     new_split->Entry = target_entry_pml2;
 
-    // EPT_PML1_ENTRY EntryTemplate;
-    // EntryTemplate.All = 0;
-    // EntryTemplate.Fields.Read = 1;
-    // EntryTemplate.Fields.Write = 1;
-    // EntryTemplate.Fields.Execute = 1;
-
-    // for (int i = 0; i < VMM_EPT_PML1E_COUNT; i++)
-    // {
-    //     new_split->PML1[i].All = EntryTemplate.All;
-    //     // new_split->PML1[i].Fields.PhysicalAddress = (target_entry_pml2->PageFrameNumber * SIZE_2_MB / PAGE_SIZE) + i;
-    //     new_split->PML1[i].Fields.PhysicalAddress = 0;
-    // }
-
     EPT_PML2_POINTER pml2_pointer;
     pml2_pointer.All = 0;
     pml2_pointer.Fields.Write = 1;
@@ -513,25 +515,24 @@ bool eptVmxRootModePageHook(PEPT_STATE ept_state, void *target_func, bool has_la
     // free previous buffer
     g_guest_state[cpu].PreAllocatedMemoryDetails.PreAllocatedBuffer = NULL;
 
-    PEPT_PML1_ENTRY target_entry_pml1 = eptGetPml1Entry(ept_state->EptPageTable, target_phy_addr);
-    if (target_entry_pml1 == NULL)
     {
-        LOG_ERR("target_entry_pml1 is NULL");
-        return false;
+        PVMM_EPT_DYNAMIC_SPLIT new_split = (PVMM_EPT_DYNAMIC_SPLIT)target_buffer;
+
+        EPT_PML1_ENTRY EntryTemplate;
+        EntryTemplate.All = 0;
+        EntryTemplate.Fields.Read = 1;
+        EntryTemplate.Fields.Write = 1;
+        EntryTemplate.Fields.Execute = 1;
+
+        for (int i = 0; i < VMM_EPT_PML1E_COUNT; i++)
+        {
+            new_split->PML1[i].All = EntryTemplate.All;
+            // new_split->PML1[i].Fields.PhysicalAddress = (target_entry_pml2->PageFrameNumber * SIZE_2_MB / PAGE_SIZE) + i;
+            new_split->PML1[i].Fields.PhysicalAddress = 0;
+        }
     }
 
-    EPT_PML1_ENTRY origin_pml1_entry = *target_entry_pml1;
-    //
-    // Lastly, mark the entry in the table as no execute. This will cause the next time that an instruction is
-    // fetched from this page to cause an EPT violation exit. This will allow us to swap in the fake page with our
-    // hook.
-    //
-    origin_pml1_entry.Fields.Write = 1;
-    origin_pml1_entry.Fields.Read = 1;
-    origin_pml1_entry.Fields.Execute = 0;
-
-    target_entry_pml1->All = origin_pml1_entry.All;
-
+  
     // Invalidate the entry in the TLB caches so it will not conflict with the actual paging structure.
     if (has_launched)
     {
@@ -580,7 +581,6 @@ bool eptPageHook(PEPT_STATE ept_state, void *TargetFunc, bool has_launched)
     return false;
 }
 
-
 int eptInsertMemRegion(PEPT_STATE ept_state,
                        bool has_launched,
                        struct HV_USERSPACE_MEM_REGION region)
@@ -593,7 +593,7 @@ int eptInsertMemRegion(PEPT_STATE ept_state,
     // 4. 新注册进的地址空间是否与之前的有重叠
     u64 gpa = PAGE_ALIGN_BOUND(region.guest_phys_addr);
     u64 guest_end_addr = PAGE_ALIGN_UPPER(region.guest_phys_addr + region.size);
-    if(0 == region.size)// 防止这种情况出现导致无法正确分配内存
+    if (0 == region.size) // 防止这种情况出现导致无法正确分配内存
     {
         guest_end_addr = gpa + SIZE_2_MB;
     }
@@ -647,7 +647,7 @@ int eptInsertMemRegion(PEPT_STATE ept_state,
     return 0;
 }
 
-void* eptGetHVA(PEPT_STATE ept_state, u64 gpa)
+void *eptGetHVA(PEPT_STATE ept_state, u64 gpa)
 {
     PEPT_PML1_ENTRY target_entry_pml1 = eptGetPml1Entry(ept_state->EptPageTable, gpa);
     if (target_entry_pml1 == NULL)
@@ -663,7 +663,7 @@ int eptCopyGuestData(PEPT_STATE ept_state, struct HV_USERSPACE_MEM_REGION region
 {
     // 1. 首先要判断目的地址是否存在，如果不存在则需要分配物理页面
     // 2. 拷贝数据
-    if(0 != eptInsertMemRegion(ept_state, false, region))
+    if (0 != eptInsertMemRegion(ept_state, false, region))
     {
         return -1;
     }
@@ -674,12 +674,12 @@ int eptCopyGuestData(PEPT_STATE ept_state, struct HV_USERSPACE_MEM_REGION region
     while (gpa < gpa_end_addr)
     {
         u64 hva = (u64)eptGetHVA(ept_state, gpa);
-        if(0 == hva)
+        if (0 == hva)
         {
             return -2;
         }
-        u64 copied_size = ALIGIN_2MB_BOUND(gpa + SIZE_2MB) - gpa;//不能使用ALIGIN_2MB_UPPER
-        if(copied_size > gpa_end_addr - gpa)
+        u64 copied_size = ALIGIN_2MB_BOUND(gpa + SIZE_2MB) - gpa; // 不能使用ALIGIN_2MB_UPPER
+        if (copied_size > gpa_end_addr - gpa)
         {
             copied_size = gpa_end_addr - gpa;
         }

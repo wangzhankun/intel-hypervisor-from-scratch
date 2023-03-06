@@ -413,7 +413,7 @@ typedef struct
 	u32 NumberOfEnabledMemoryRanges;	   // Number of memory ranges specified in MemoryRanges
 	EPTP EptPointer;					   // Extended-Page-Table Pointer
 	PVMM_EPT_PAGE_TABLE EptPageTable;	   // Page table entries for EPT operation
-
+	bool is_host_virtual_address_space;   // True if this EPT is for the host virtual address space. False if this EPT is for a guest.
 } EPT_STATE, *PEPT_STATE;
 
 typedef struct

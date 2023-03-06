@@ -1,8 +1,9 @@
 define adddbg
-    b eptInsertMemRegion
+    b eptCopyGuestData
     b kernel/src/VmExitHandler.c:357
     b kernel/src/VmExitHandler.c:389
     b handleHLT
+    b launchVm
 end
 
 define addsym
