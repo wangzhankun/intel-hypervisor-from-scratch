@@ -314,12 +314,6 @@ typedef struct _VMM_EPT_PAGE_TABLE
 	 */
 	__attribute__((aligned(PAGE_SIZE))) EPT_PML2_ENTRY PML2[VMM_EPT_PML3E_COUNT][VMM_EPT_PML2E_COUNT];
 
-	/**
-	 * List of all allocated dynamic splits. Used to free dynamic entries at the end of execution.
-	 * A dynamic split is a 2MB page that's been split into 512 4096 size pages.
-	 * This is used only on request when a specific page's protections need to be split.
-	 */
-	struct list_head DynamicSplitList;
 
 } __attribute__((aligned(4096))) VMM_EPT_PAGE_TABLE, *PVMM_EPT_PAGE_TABLE;
 
@@ -339,10 +333,6 @@ typedef struct _VMM_EPT_DYNAMIC_SPLIT
 		PEPT_PML2_POINTER Pointer;
 	};
 
-	/*
-	 * Linked list entries for each dynamic split
-	 */
-	struct list_head DynamicSplitList;
 
 } VMM_EPT_DYNAMIC_SPLIT, *PVMM_EPT_DYNAMIC_SPLIT;
 

@@ -119,7 +119,6 @@ void initVMM_EPT_PAGE_TABLE(PEPT_STATE ept_state, PVMM_EPT_PAGE_TABLE page_table
     EPT_PML3_POINTER pml3_rwx_template = {0};
     EPT_PML2_ENTRY pml2_entry_template = {0};
 
-    INIT_LIST_HEAD(&page_table->DynamicSplitList);
 
     // eanch PML4 entry covers 512 GB, so one entry is more than enough
     page_table->PML4[0].Fields.PhysicalAddress = __pa(&page_table->PML3[0]) / PAGE_SIZE;
@@ -179,15 +178,8 @@ void eptClearPaging(EPTP ept_pointer)
     // 这是显然的。因为table中的第一个元素就是PML4E
     // 因此，第一个PML4E的地址就是table的地址
     PVMM_EPT_PAGE_TABLE table = __va(ept_pointer.Fields.PML4PhysialAddress << 12);
-    struct list_head head = table->DynamicSplitList;
-    struct list_head *pos, *n;
-    list_for_each_safe(pos, n, &head)
-    {
-        VMM_EPT_DYNAMIC_SPLIT *p = list_entry(pos, VMM_EPT_DYNAMIC_SPLIT, DynamicSplitList);
-        list_del(pos);
-        destoryVMM_EPT_DYNAMIC_SPLIT(p);
-    }
-    initVMM_EPT_PAGE_TABLE(NULL, table);
+//TODO
+    // initVMM_EPT_PAGE_TABLE(NULL, table);
 }
 
 PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
@@ -202,7 +194,6 @@ PVMM_EPT_PAGE_TABLE EptAllocateAndCreateIdentityPageTable(PEPT_STATE ept_state)
         goto ERR;
     }
     memset(page_table, 0, sizeof(VMM_EPT_PAGE_TABLE));
-    INIT_LIST_HEAD(&page_table->DynamicSplitList);
 
     page_table->PML4[0].Fields.Read = 1;
     page_table->PML4[0].Fields.Write = 1;
@@ -464,7 +455,6 @@ int eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
         return false;
     }
     memset(new_split, 0, sizeof(VMM_EPT_DYNAMIC_SPLIT));
-    INIT_LIST_HEAD(&(new_split->DynamicSplitList));
 
     // Point back to the entry in the dynamic split for easy reference for which entry that dynamic split is for.
     new_split->Entry = target_entry_pml2;
@@ -488,9 +478,6 @@ int eptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     pml2_pointer.Fields.Read = 1;
     pml2_pointer.Fields.Execute = 1;
     pml2_pointer.Fields.PhysicalAddress = __pa(&new_split->PML1[0]) >> 12;
-
-    // insert at the end of the list
-    list_add_tail(&new_split->DynamicSplitList, &EptPageTable->DynamicSplitList);
 
     target_entry_pml2->All = pml2_pointer.All;
     return true;
