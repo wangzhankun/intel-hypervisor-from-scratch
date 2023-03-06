@@ -10,14 +10,12 @@
 using namespace std;
 
 const u64 GUEST_PHYS_MEMORY_BASE = 0;
-const u64 GUEST_PHYS_MEMORY_SIZE = 1 << 23; // 8MB
-const u64 GUEST_PT1 = 0x1000;
-const u64 GUEST_PT2 = 0x2000;
-const u64 GUEST_PT3 = 0x3000;
-const u64 GUEST_ENTRY = 0x8000;
-const u64 GUEST_STACK_TOP = 0x1000 * 256;
-
-const u64 GUEST_DATA_REGION = GUEST_STACK_TOP + 0x1000;
+const u64 GUEST_PHYS_MEMORY_SIZE = 0x800000; // 8MB, 总计 8*4096 个页面
+const u64 GUEST_PT1 = 0x1000;                // 4KB
+const u64 GUEST_PT2 = 0x2000;                // 8KB
+const u64 GUEST_PT3 = 0x3000;                // 12KB
+const u64 GUEST_ENTRY = 0x8000;              // 32KB
+const u64 GUEST_STACK_TOP = 0x10000;         // 64KB
 
 struct PAGE_TABLE
 {
@@ -37,7 +35,7 @@ void setupGuestPageTable(void *hva)
     pt2->entry[0] |= (1ULL) | (1ULL << 1);
 
     struct PAGE_TABLE *pt3 = (struct PAGE_TABLE *)(hva + GUEST_PT3);
-    for (int i = 0; i < 512; i++)
+    for (int i = 0; i < 256; i++) // 影射了 1 * 2MB的内存
     {
         // each huge page is 2MB
         pt3->entry[i] = (GUEST_PHYS_MEMORY_BASE + i) << 21;
@@ -74,13 +72,19 @@ int main(int argc, char **argv)
     }
 
     // https://shell-storm.org/online/Online-Assembler-and-Disassembler
+    // 好吧，不要使用上面的链接，还是老老实实，自己编译吧
     unsigned char code[] = {
-        // xor ebx, ebx
-        // mov [0x9000], ebx
-        // mov  eax, [0x9000]
-        // cpuid
-        // hlt
-        0x31, 0xdb, 0x89, 0x1d, 0xf8, 0x8f, 0x00, 0x00, 0xa1, 0x00, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0xa2, 0xf4};
+        0x31, 0xc0, //xor    %eax,%eax
+        0x31, 0xdb, //xor    %ebx,%ebx
+        0x83, 0xc0, 0x02, //add    $0x2,%eax
+        0x83, 0xc3, 0x03, //add    $0x3,%ebx
+        0x89, 0xc1, //mov    %eax,%ecx
+        0x89, 0xda, //mov    %ebx,%edx
+        0x89, 0x1c, 0x25, 0x00, 0x00, 0x40, 0x00, //mov    %ebx,0x400000(,%eiz,1)
+        0x8b, 0x04, 0x25, 0x00, 0x00, 0x40, 0x00, //mov    0x400000(,%eiz,1),%eax
+        0x0f, 0xa2, //cpuid  
+        0xf4, //hlt
+    };
 
     ioctl(fd, HV_CREATE_VM, 0);
 
@@ -93,11 +97,22 @@ int main(int argc, char **argv)
     struct HV_USERSPACE_MEM_REGION region = {
         .guest_phys_addr = 0,
         .userspace_addr = (uint64_t)hva,
-        .size = GUEST_PHYS_MEMORY_SIZE,
+        .size = 0x100000, // 1MB
+        .flags = 0,
+    };
+    cout << "region size: " << region.size << endl;
+    sleep(1);
+
+    ioctl(fd, HV_MEM_INIT, &region);
+
+    struct HV_USERSPACE_MEM_REGION region2 = {
+        .guest_phys_addr = 0,
+        .userspace_addr = (uint64_t)hva + 0,
+        .size = 0x100000, // 1MB，需要把客户机的页表和代码都拷贝过去
         .flags = 0,
     };
 
-    ioctl(fd, HV_MEM_INIT, &region);
+    ioctl(fd, HV_COPY_CODE, &region2);
 
     struct HV_VCPU vcpu;
     ioctl(fd, HV_GET_VCPU, &vcpu);

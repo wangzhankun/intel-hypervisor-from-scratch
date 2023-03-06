@@ -6,21 +6,20 @@
 #include "../include/vmx.h"
 #include "../include/vmx_inst.h"
 
-extern PEPT_STATE ept_state; // defined in main.c
-
+extern VIRTUAL_MACHINE_STATE g_guest_state[];
 extern void initVmcsGuestState2(void);
 
 void resetVMCS(void* _vcpu)
 {
-    initVmcsGuestState2();
+    // initVmcsGuestState2();
     struct HV_VCPU *vcpu = (struct HV_VCPU *)_vcpu;
 
     u64 cr3 = 0;
     vmread(HOST_CR3, &cr3);
     cr3 = cr3 & 0x0fff;// 低12bit 是 0x3
 
-    vmwrite(PAGE_FAULT_ERROR_CODE_MASK, 0);
-    vmwrite(PAGE_FAULT_ERROR_CODE_MATCH, 0);
+    // vmwrite(PAGE_FAULT_ERROR_CODE_MASK, 0);
+    // vmwrite(PAGE_FAULT_ERROR_CODE_MATCH, 0);
 
     vmwrite(GUEST_CR3, vcpu->crs.cr3.All);
     vmwrite(GUEST_RSP, vcpu->regs.rsp);
@@ -41,7 +40,14 @@ long hyper_unclocked_ioctl(struct file *fp,
     {
         struct HV_USERSPACE_MEM_REGION region;
         copy_from_user(&region, (void *)arg, sizeof(struct HV_USERSPACE_MEM_REGION));
-        eptInsertMemRegion(ept_state, false, region);
+        eptInsertMemRegion(g_guest_state[0].ept_state, false, region);
+        break;
+    }
+    case HV_COPY_CODE:
+    {
+        struct HV_USERSPACE_MEM_REGION region;
+        copy_from_user(&region, (void *)arg, sizeof(struct HV_USERSPACE_MEM_REGION));
+        eptCopyGuestData(g_guest_state[0].ept_state, region);
         break;
     }
     case HV_GET_VCPU:
@@ -59,10 +65,10 @@ long hyper_unclocked_ioctl(struct file *fp,
     }
     case HV_RUN:
         // on_each_cpu(setupVMCS, ept_state, 1);
-        launchVm(ept_state);
+        launchVm();
         break;
     case HV_HLT:
-        exitVm(ept_state);
+        exitVm();
         break;
 
     default:

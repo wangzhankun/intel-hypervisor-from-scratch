@@ -526,5 +526,11 @@ int eptInsertMemRegion(PEPT_STATE ept_state,
                        bool has_launched,
                        struct HV_USERSPACE_MEM_REGION region);
 
+int eptInsertMemRegion2(PEPT_STATE ept_state,
+                        bool has_launched,
+                        struct HV_USERSPACE_MEM_REGION region);
+
+int eptCopyGuestData(PEPT_STATE ept_state, struct HV_USERSPACE_MEM_REGION region);
+
 void eptClearPaging(EPTP ept_pointer);
 #endif // __EPTP_H__

@@ -32,20 +32,20 @@ typedef struct _VIRTUAL_MACHINE_STATE
     phys_addr_t VmxonRegionPhyAddr; // VMXON region, physical address
     phys_addr_t VmcsRegionPhyAddr;  // VMCS region, physical address
 
-    uint64_t Eptp;              // extended page table pointer
     uint64_t VmmStack;          // stack for vmm in vm-exit state, virtual address
     uint64_t MsrBitmap;         // msr bitmap virtual address
     uint64_t MsrBitmapPhysical; // msr bitmap physical address
 
     VMX_NON_ROOT_MODE_MEMORY_ALLOCATOR PreAllocatedMemoryDetails;
+    PEPT_STATE ept_state;
 } VIRTUAL_MACHINE_STATE, *PVIRTUAL_MACHINE_STATE;
 
 
-PEPT_STATE initVMX(void);
-void exitVMX(PEPT_STATE ept_state);
+int initVMX(void);
+void exitVMX(void);
 
-bool launchVm(PEPT_STATE ept_state);
-void exitVm(PEPT_STATE ept_state);
-void setupVMCS(PEPT_STATE ept_state);
+bool launchVm(void);
+void exitVm(void);
+void setupVMCS(void);
 
 #endif /* __VMX_H__ */

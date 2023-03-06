@@ -323,7 +323,7 @@ void handleHLT(void)
 {
     LOG_INFO("[*] Execution of HLT detected... \n");
     EPTP ept_pointer = {0};
-    vmread(EPT_POINTER, (u64*)(&ept_pointer));
+    vmread(EPT_POINTER, (u64 *)(&ept_pointer));
     // eptClearPaging(ept_pointer); //TODO 老是出错
     backHost();
 }
@@ -384,6 +384,8 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     LOG_INFO("GUEST_RIP 0x%llx\n", guest_rip);
     LOG_INFO("GUEST_RSP 0x%llx\n", guest_rsp);
 
+    bool just_next_instruction = true;
+
     // BREAKPOINT();
     int status = 0;
     switch (ExitReason)
@@ -398,6 +400,8 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     {
         VMEXIT_INTERRUPT_INFO info = {0};
         vmread(VM_EXIT_INTR_INFO, (u64 *)&info);
+        u64 guest_phy_addr = 0;
+        vmread(GUEST_PHYSICAL_ADDRESS, &guest_phy_addr);
         if (INTERRUPT_TYPE_SOFTWARE_EXCEPTION == info.InterruptionType)
         {
             if (EXCEPTION_VECTOR_BREAKPOINT == info.Vector)
@@ -503,8 +507,10 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     {
         u64 guest_phy_addr = 0;
         vmread(GUEST_PHYSICAL_ADDRESS, &guest_phy_addr);
+        EPTP ept_pointer;
+        vmread(EPT_POINTER, (u64 *)&ept_pointer);
         status = handleEPTViolation(GuestRegs, ExitQualification, guest_phy_addr);
-
+        just_next_instruction = false;
         break;
     }
     case EXIT_REASON_EPT_MISCONFIG:
@@ -522,16 +528,18 @@ int MainVmexitHandler(PGUEST_REGS GuestRegs)
     }
 
     // 跳转到下一条指令
-    uint64_t exit_inst_length = 0;
-    ret = vmread(VM_EXIT_INSTRUCTION_LEN, &exit_inst_length);
-    // We have to save GUEST_RIP & GUEST_RSP somewhere to restore them directly
-    guest_rip = guest_rip + exit_inst_length;
-    ret = vmwrite(GUEST_RIP, guest_rip);
-    if (ret != 0)
+    if (just_next_instruction)
     {
-        LOG_INFO("vmwrite error 0x%llx\n", ret);
+        uint64_t exit_inst_length = 0;
+        ret = vmread(VM_EXIT_INSTRUCTION_LEN, &exit_inst_length);
+        // We have to save GUEST_RIP & GUEST_RSP somewhere to restore them directly
+        guest_rip = guest_rip + exit_inst_length;
+        ret = vmwrite(GUEST_RIP, guest_rip);
+        if (ret != 0)
+        {
+            LOG_INFO("vmwrite error 0x%llx\n", ret);
+        }
     }
-
     if (status != 0)
     {
     }

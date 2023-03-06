@@ -15,7 +15,6 @@ MODULE_LICENSE("GPL");
 #include "../include/vmx.h"
 #include "../include/cpu_features.h"
 
-PEPT_STATE ept_state = NULL;
 
 struct file_operations hyper_fops = {
     .owner = THIS_MODULE,
@@ -51,8 +50,8 @@ static int __init misc_init(void)
     }
 
 
-    ept_state = initVMX();
-    if (NULL != ept_state)
+    int ret = initVMX();
+    if (0 == ret)
     {
         LOG_INFO("init vmx operation success");
     }
@@ -62,7 +61,6 @@ static int __init misc_init(void)
         return -1;
     }
 
-    int ret;
     ret = misc_register(&hypervisor_cdev);
     if (ret < 0)
     {
@@ -84,7 +82,7 @@ static void misc_exit(void)
 {
     misc_deregister(&hypervisor_cdev);
 
-    exitVMX(ept_state);
+    exitVMX();
 
 
     LOG_INFO("Goodbye, hypervisor\n");

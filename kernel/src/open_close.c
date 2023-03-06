@@ -7,7 +7,6 @@
 #include "../include/vmx_inst.h"
 #include "../include/vmx.h"
 
-extern PEPT_STATE ept_state;
 extern VIRTUAL_MACHINE_STATE g_guest_state[32];
 
 extern void guestEntry(void);
@@ -98,8 +97,8 @@ void setVMCS(void *)
 void test(void)
 {
     on_each_cpu(setVMCS, NULL, 1);
-    launchVm(ept_state);
-    exitVm(ept_state);
+    launchVm();
+    exitVm();
 }
 
 // open

@@ -160,7 +160,7 @@ static void _exitVMX(void *unused)
     __exitVMXOnCpu(cpu);
 }
 
-void exitVMX(PEPT_STATE ept_state)
+void exitVMX(void)
 {
     LOG_INFO("exitVMX ing...");
     on_each_cpu((smp_call_func_t)_exitVMX, NULL, 1);
@@ -171,8 +171,7 @@ void exitVMX(PEPT_STATE ept_state)
     }
     free_cpumask_var(cpus_hardware_enabled);
 
-    destoryEPT2(ept_state); // early consturct, late destruct
-    ept_state = NULL;
+    destoryEPT2(g_guest_state[0].ept_state); // early consturct, late destruct
 }
 
 BOOL getSegmentDescriptor(PSEGMENT_SELECTOR SegmentSelector,
@@ -248,7 +247,7 @@ uint32_t AdjustControls(uint32_t ctl, uint32_t msr)
     return ctl;
 }
 
-void initVmcsControlFields(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
+void initVmcsControlFields(VIRTUAL_MACHINE_STATE *guest_state)
 {
     // VOL3 Table 25-7. Definitions of Secondary Processor-Based VM-Execution Controls
     //  enable EPT
@@ -301,7 +300,8 @@ void initVmcsControlFields(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_st
     vmwrite(IO_BITMAP_A, 0);
     vmwrite(IO_BITMAP_B, 0);
     // 设置EPT
-    vmwrite(EPT_POINTER, ept_state->EptPointer.All);
+    int cpu = smp_processor_id();
+    vmwrite(EPT_POINTER, g_guest_state[cpu].ept_state->EptPointer.All);
     
     // VOL3 25.6.3 Exception Bitmap
     // VOL3 26.2 OTHER CAUSES OF VM EXIT
@@ -447,9 +447,9 @@ void initVmcsGuestState(void)
     vmwrite(GUEST_RIP, 0);
 }
 
-void _setupVMCS(VIRTUAL_MACHINE_STATE *guest_state, PEPT_STATE ept_state)
+void _setupVMCS(VIRTUAL_MACHINE_STATE *guest_state)
 {
-    initVmcsControlFields(guest_state, ept_state);
+    initVmcsControlFields(guest_state);
     LOG_INFO("initVmcsControlFields success");
     initVmcsHostState((u64)(guest_state->VmmStack + VMM_STACK_SIZE / 2), (u64)VmexitHandler);
     LOG_INFO("initVmcsHostState success");
@@ -521,11 +521,11 @@ BACKHERE:
     return 0;
 }
 
-void setupVMCS(PEPT_STATE ept_state)
+void setupVMCS(void)
 {
     int cpu = smp_processor_id();
 
-    LOG_INFO("Launching VM on CPU %d, ept_state = 0x%llx", cpu, ept_state);
+    LOG_INFO("Launching VM on CPU %d, ept_state = 0x%llx", cpu, g_guest_state[cpu].ept_state);
 
     // clearing the VMCS state and loading it as the current VMCS
     if (clearVMCSState(&g_guest_state[cpu]))
@@ -545,7 +545,7 @@ void setupVMCS(PEPT_STATE ept_state)
     LOG_INFO("VMCS loaded\n");
 
     LOG_INFO("setting up VMCS\n");
-    _setupVMCS(&g_guest_state[cpu], ept_state);
+    _setupVMCS(&g_guest_state[cpu]);
 
     return;
 ERR:
@@ -558,13 +558,13 @@ ERR:
     return;
 }
 
-void exitVm(PEPT_STATE unused)
+void exitVm(void)
 {
     // on_each_cpu((smp_call_func_t)_exitVm, (void *)NULL, 1);
     return;
 }
 
-bool launchVm(PEPT_STATE ept_state)
+bool launchVm(void)
 {
     LOG_INFO("Launching VM on CPUs");
 
@@ -599,14 +599,14 @@ static void _initVMX(void *ept_state)
         LOG_ERR("Failed to enable VMX on CPU %d", cpu);
         goto ERR;
     }
-    setupVMCS((PEPT_STATE)ept_state);
+    setupVMCS();
     return;
 ERR:
     __exitVMXOnCpu(cpu);
     return;
 }
 
-PEPT_STATE initVMX(void)
+int initVMX(void)
 {
 
     for (int i = 0; i < 32; i++)
@@ -620,9 +620,11 @@ PEPT_STATE initVMX(void)
         LOG_ERR("init ept operation failed");
         return NULL;
     }
-    ////////////////////ept page hook example
-    // eptPageHook(kmalloc, false);
-    //////////////////////
+    
+    for(int i =  0; i < 32; i++)
+    {
+        g_guest_state[i].ept_state = ept_state;
+    }
 
     if (!alloc_cpumask_var(&cpus_hardware_enabled, GFP_KERNEL))
     {
@@ -635,10 +637,10 @@ PEPT_STATE initVMX(void)
     LOG_INFO("VMX is enabled on %d CPUs", cpu_num);
     if (cpu_num == num_online_cpus())
     {
-        return ept_state;
+        return 0;
     }
 
 ERR:
-    exitVMX(ept_state);
-    return NULL;
+    exitVMX();
+    return -1;
 }

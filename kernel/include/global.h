@@ -10,6 +10,10 @@
 #define PAGE_ALIGN_UPPER(addr)    (((u64)(addr) + PAGE_SIZE - 1) & PAGE_MASK) // 向上取整
 #define PAGE_ALIGN_BOUND(addr)    (((u64)(addr)) & PAGE_MASK) // 向下取整
 
+#define SIZE_2MB 0x200000
+#define SIZE_2MB_MASK (~(SIZE_2MB - 1))
+#define ALIGIN_2MB_UPPER(addr)    (((u64)(addr) + SIZE_2MB - 1) & SIZE_2MB_MASK) // 向上取整
+#define ALIGIN_2MB_BOUND(addr)    (((u64)(addr)) & SIZE_2MB_MASK) // 向下取整
 
 #define MODULENAME "myhypervisor"
 
